@@ -15,7 +15,7 @@ This document tracks empirical verification of skills across supported agent eco
 | **Foundation & Installer** | 🟢 Verified | 🟢 Verified | 🟢 Verified | 🟢 Verified | 🟢 Verified | Automated test suite & path resolution |
 | **citation-integrity** | 🟢 Verified | 🟢 Verified | 🟢 Verified | 🟢 Verified | 🟢 Verified | Pure standard library, zero dependencies |
 | **literature-discovery** | 🟢 Verified | 🟢 Verified | 🟢 Verified | 🟢 Verified | 🟢 Verified | arXiv & CrossRef APIs, no keys required |
-| **thai-academic-docx** | ⚪ Planned | ⚪ Planned | ⚪ Planned | ⚪ Planned | ⚪ Planned | Template-first DOCX engine |
+| **thai-academic-docx** | 🟢 Verified | 🟢 Verified | 🟢 Verified | 🟢 Verified | 🟢 Verified | Pure Python standard OpenXML zip engine |
 | **academic-peer-reviewer**| ⚪ Planned | ⚪ Planned | ⚪ Planned | ⚪ Planned | ⚪ Planned | Adversarial reviewer |
 
 ## Standard Installation Paths Checked
