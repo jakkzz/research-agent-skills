@@ -5,12 +5,12 @@ This roadmap tracks the planned work for `research-agent-skills`. New ideas are 
 ---
 
 ## Now
-- **Repository foundation & governance:** Establish directory layout, supervision agreement, CI/test harness, and PR template ([Issue #1](https://github.com/jakkzz/research-agent-skills/issues/1)).
-- **Skill specification validator:** Lightweight test suite enforcing Open Agent Skills standard (`SKILL.md` frontmatter, kebab-case naming, script execution).
+- **Repository foundation & governance:** [Completed] Establish directory layout, supervision agreement, CI/test harness, and PR template ([Issue #1](https://github.com/jakkzz/research-agent-skills/issues/1)).
+- **Skill specification validator:** [Completed] Lightweight test suite enforcing Open Agent Skills standard (`SKILL.md` frontmatter, kebab-case naming, script execution).
+- **Citation integrity MVP (`skills/citation-integrity`):** [In Progress] First vertical slice verifying LaTeX/Markdown citations against `.bib` or CrossRef/arXiv references with zero hallucinations ([Issue #3](https://github.com/jakkzz/research-agent-skills/issues/3)).
 
 ## Next
-- **Citation integrity MVP (`skills/citation-integrity`):** First vertical slice verifying LaTeX/Markdown citations against `.bib` or CrossRef/arXiv references with zero hallucinations.
-- **Claude and Hermes installation verification:** Real-agent runtime verification scripts ensuring skills install and execute without manual path tweaking.
+- **Cross-agent universal installer (`install.sh` / `scripts/install.py`):** Real-agent installation scripts ensuring skills install and execute across Claude Code, Hermes, Pi/OhMyPi, Google Antigravity, and Codex without manual path tweaking.
 
 ## Later
 - **Literature discovery (`skills/literature-discovery`):** Direct querying of arXiv, Semantic Scholar, and CrossRef APIs with structured JSON/BibTeX outputs.
