@@ -12,8 +12,8 @@ This document tracks empirical verification of skills across supported agent eco
 
 | Skill Name | Claude Code | Hermes | Pi / OhMyPi | Antigravity (Gemini) | Codex / OpenAI | Notes |
 | :--- | :---: | :---: | :---: | :---: | :---: | :--- |
-| **Foundation Harness** | 🟡 Pending | 🟡 Pending | 🟡 Pending | 🟢 Verified | 🟡 Pending | Validates skill directory schema |
-| **citation-integrity** | ⚪ Planned | ⚪ Planned | ⚪ Planned | ⚪ Planned | ⚪ Planned | First vertical slice (Next) |
+| **Foundation & Installer** | 🟢 Verified | 🟢 Verified | 🟢 Verified | 🟢 Verified | 🟢 Verified | Automated test suite & path resolution |
+| **citation-integrity** | 🟢 Verified | 🟢 Verified | 🟢 Verified | 🟢 Verified | 🟢 Verified | Pure standard library, zero dependencies |
 | **thai-academic-docx** | ⚪ Planned | ⚪ Planned | ⚪ Planned | ⚪ Planned | ⚪ Planned | Template-first DOCX engine |
 | **literature-discovery** | ⚪ Planned | ⚪ Planned | ⚪ Planned | ⚪ Planned | ⚪ Planned | API-based search |
 | **academic-peer-reviewer**| ⚪ Planned | ⚪ Planned | ⚪ Planned | ⚪ Planned | ⚪ Planned | Adversarial reviewer |
