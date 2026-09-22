@@ -16,7 +16,7 @@ This document tracks empirical verification of skills across supported agent eco
 | **citation-integrity** | 🟢 Verified | 🟢 Verified | 🟢 Verified | 🟢 Verified | 🟢 Verified | Pure standard library, zero dependencies |
 | **literature-discovery** | 🟢 Verified | 🟢 Verified | 🟢 Verified | 🟢 Verified | 🟢 Verified | arXiv & CrossRef APIs, no keys required |
 | **thai-academic-docx** | 🟢 Verified | 🟢 Verified | 🟢 Verified | 🟢 Verified | 🟢 Verified | Pure Python standard OpenXML zip engine |
-| **academic-peer-reviewer**| ⚪ Planned | ⚪ Planned | ⚪ Planned | ⚪ Planned | ⚪ Planned | Adversarial reviewer |
+| **academic-peer-reviewer**| 🟢 Verified | 🟢 Verified | 🟢 Verified | 🟢 Verified | 🟢 Verified | Adversarial reviewer, CARS & hype auditor |
 
 ## Standard Installation Paths Checked
 
