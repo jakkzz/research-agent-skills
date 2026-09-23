@@ -16,6 +16,12 @@ from contextlib import contextmanager, nullcontext
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Dict, List, Mapping, Optional, Tuple
+from urllib.parse import urlsplit, urlunsplit
+
+if os.name == "nt":
+    import msvcrt
+else:
+    import fcntl
 
 AGENT_PATHS: Dict[str, Dict[str, str]] = {
     "claude": {"user": ".claude/skills", "project": ".claude/skills"},
@@ -169,26 +175,37 @@ def _write_state(state_path: Path, state: Dict) -> None:
 
 @contextmanager
 def _state_lock(state_path: Path, timeout: float = STATE_LOCK_TIMEOUT_SECONDS):
-    """Serialize manifest and destination transactions across processes."""
+    """Serialize transactions with an OS lock released on process exit."""
     state_path = Path(state_path)
     state_path.parent.mkdir(parents=True, exist_ok=True)
     lock_path = state_path.with_name(f"{state_path.name}.lock")
     deadline = time.monotonic() + timeout
-    while True:
+    with lock_path.open("a+b") as lock_file:
+        if os.name == "nt":
+            lock_file.seek(0, os.SEEK_END)
+            if lock_file.tell() == 0:
+                lock_file.write(b"\0")
+                lock_file.flush()
+            lock_file.seek(0)
+        while True:
+            try:
+                if os.name == "nt":
+                    msvcrt.locking(lock_file.fileno(), msvcrt.LK_NBLCK, 1)
+                else:
+                    fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                break
+            except OSError:
+                if time.monotonic() >= deadline:
+                    raise TimeoutError(f"Timed out waiting for installer lock {lock_path}")
+                time.sleep(STATE_LOCK_POLL_SECONDS)
         try:
-            lock_path.mkdir()
-            break
-        except FileExistsError:
-            if time.monotonic() >= deadline:
-                raise TimeoutError(f"Timed out waiting for installer lock {lock_path}")
-            time.sleep(STATE_LOCK_POLL_SECONDS)
-    try:
-        yield
-    finally:
-        try:
-            lock_path.rmdir()
-        except FileNotFoundError:
-            pass
+            yield
+        finally:
+            if os.name == "nt":
+                lock_file.seek(0)
+                msvcrt.locking(lock_file.fileno(), msvcrt.LK_UNLCK, 1)
+            else:
+                fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
 
 
 def _path_exists(path: Path) -> bool:
@@ -228,6 +245,29 @@ def content_hashes(path: Path) -> Dict[str, str]:
     return snapshot
 
 
+def _sanitize_remote_url(remote: str) -> str:
+    """Remove URL credentials and query data before persisting provenance."""
+    if "://" in remote:
+        parsed = urlsplit(remote)
+        if parsed.hostname:
+            host = parsed.hostname
+            if ":" in host and not host.startswith("["):
+                host = f"[{host}]"
+            try:
+                port = parsed.port
+            except ValueError:
+                port = None
+            netloc = f"{host}:{port}" if port is not None else host
+            return urlunsplit((parsed.scheme, netloc, parsed.path, "", ""))
+    at_index = remote.find("@")
+    colon_index = remote.find(":", at_index + 1)
+    if at_index > 0 and colon_index > at_index and not any(
+        separator in remote[:at_index] for separator in ("/", "\\")
+    ):
+        return remote[at_index + 1:]
+    return remote
+
+
 def _repo_metadata(repo_root: Path) -> Tuple[str, Optional[str]]:
     source_repo = str(repo_root.resolve())
     revision: Optional[str] = None
@@ -241,7 +281,7 @@ def _repo_metadata(repo_root: Path) -> Tuple[str, Optional[str]]:
             check=False, capture_output=True, text=True,
         )
         if remote:
-            source_repo = remote
+            source_repo = _sanitize_remote_url(remote)
         if revision_result.returncode == 0:
             revision = revision_result.stdout.strip() or None
     except OSError:
@@ -291,17 +331,25 @@ def install_skill(
     dry_run: bool = False,
 ) -> Tuple[bool, str]:
     """Install one skill, using sibling staging and rollback for copy mode."""
-    skill_src = Path(skill_src).resolve()
+    source_argument = Path(skill_src)
+    if source_argument.is_symlink():
+        return False, f"Invalid skill source: symlinked skill roots are not allowed: {source_argument}"
+    skill_src = source_argument.resolve()
     target_dir = Path(target_dir).resolve()
     dest_path = target_dir / skill_name
+    if not skill_src.is_dir() or not (skill_src / "SKILL.md").is_file():
+        return False, f"Invalid skill source: {skill_src}"
+    try:
+        source_snapshot = content_hashes(skill_src)
+    except OSError as exc:
+        return False, f"Invalid skill source {skill_src}: {exc}"
+    if any(metadata.startswith("symlink:") for metadata in source_snapshot.values()):
+        return False, f"Invalid skill source: symlinks are not allowed inside {skill_src}"
     if dry_run:
         if _path_exists(dest_path) and not force:
             return False, f"Destination {dest_path} already exists (use --force to replace it)"
         action = "symlink" if symlink else "copy"
         return True, f"Would {action} {skill_src} to {dest_path}"
-    if not skill_src.is_dir() or not (skill_src / "SKILL.md").is_file():
-        return False, f"Invalid skill source: {skill_src}"
-
     state_path = Path(state_path) if state_path is not None else None
     lock = _state_lock(state_path) if state_path is not None else nullcontext()
     try:
@@ -319,7 +367,10 @@ def install_skill(
                 if symlink:
                     staging.symlink_to(skill_src, target_is_directory=True)
                 else:
-                    shutil.copytree(skill_src, staging)
+                    shutil.copytree(skill_src, staging, symlinks=True)
+                    staging_snapshot = content_hashes(staging)
+                    if any(metadata.startswith("symlink:") for metadata in staging_snapshot.values()):
+                        raise ValueError("Skill source changed during copy and contains a symlink")
                     if os.name == "posix":
                         scripts_dir = staging / "scripts"
                         if scripts_dir.is_dir():
@@ -367,7 +418,8 @@ def uninstall_skill(
         return False, "A state manifest is required for uninstall"
     state_path = Path(state_path)
     try:
-        with _state_lock(state_path):
+        lock = nullcontext() if dry_run else _state_lock(state_path)
+        with lock:
             state = _load_state(state_path)
             record = next(
                 (item for item in state["installations"] if item["destination"] == str(dest_path)), None

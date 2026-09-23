@@ -124,6 +124,37 @@ class TestInstaller(unittest.TestCase):
         self.assertIn("SKILL.md", record["content_hashes"])
         self.assertTrue(record["content_hashes"]["SKILL.md"].startswith("file:"))
 
+    def test_remote_metadata_redacts_url_credentials(self):
+        self.assertEqual(
+            install._sanitize_remote_url("https://user:secret@example.test/owner/repo.git"),
+            "https://example.test/owner/repo.git",
+        )
+        self.assertEqual(
+            install._sanitize_remote_url("git@example.test:owner/repo.git"),
+            "example.test:owner/repo.git",
+        )
+
+    def test_copy_install_rejects_source_symlinks(self):
+        source = self.root / "source-skill"
+        source.mkdir()
+        (source / "SKILL.md").write_text("---\nname: source-skill\n---\n", encoding="utf-8")
+        secret = self.root / "secret.txt"
+        secret.write_text("do not copy", encoding="utf-8")
+        try:
+            (source / "outside.txt").symlink_to(secret)
+        except (OSError, NotImplementedError) as exc:
+            self.skipTest(f"symlinks unavailable: {exc}")
+
+        target = self.root / "skills"
+        success, message = install.install_skill(
+            "source-skill", source, target,
+            state_path=self.state_path, repo_root=self.repo_root,
+        )
+
+        self.assertFalse(success)
+        self.assertIn("symlink", message.lower())
+        self.assertFalse((target / "source-skill").exists())
+
     def test_snapshot_does_not_follow_nested_symlinks(self):
         tree = self.root / "tree"
         external = self.root / "external"
@@ -232,6 +263,23 @@ class TestInstaller(unittest.TestCase):
         self.assertIn("Would copy", message)
         self.assertFalse(target.exists())
         self.assertFalse(self.state_path.exists())
+
+    def test_dry_run_uninstall_does_not_create_state_directory(self):
+        fresh_state = self.root / "unused" / "install-state.json"
+        success, message = install.uninstall_skill(
+            "citation-integrity", self.root / "skills",
+            state_path=fresh_state, dry_run=True,
+        )
+        self.assertFalse(success)
+        self.assertIn("unowned", message)
+        self.assertFalse(fresh_state.parent.exists())
+
+    def test_stale_lock_file_does_not_block_new_lock(self):
+        self.state_path.parent.mkdir(parents=True, exist_ok=True)
+        lock_path = self.state_path.with_name(f"{self.state_path.name}.lock")
+        lock_path.write_text("stale metadata", encoding="utf-8")
+        with install._state_lock(self.state_path, timeout=0.1):
+            self.assertTrue(lock_path.is_file())
 
     def test_explicit_agent_and_scope_are_required(self):
         with self.assertRaises(SystemExit):
