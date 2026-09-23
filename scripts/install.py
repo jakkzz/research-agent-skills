@@ -478,7 +478,8 @@ def check_status(skills: Dict[str, Path], target_dirs: List[Path], state_path: P
     except ValueError as exc:
         print(f"State error: {exc}", file=sys.stderr)
         return False
-    for target in target_dirs:
+    for target_value in target_dirs:
+        target = Path(target_value).resolve()
         print(f"Target: {target}")
         for name in sorted(skills):
             destination = target / name
