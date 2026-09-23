@@ -1,260 +1,203 @@
 #!/usr/bin/env python3
-"""
-search_papers.py
-Search scholarly literature across arXiv and CrossRef APIs with zero external dependencies.
-Extracts verified metadata, abstracts, and BibTeX citations.
-"""
+"""Discover candidate records from arXiv and Crossref APIs."""
 
 import argparse
 import json
 import re
 import sys
-import urllib.error
 import urllib.parse
 import urllib.request
 import xml.etree.ElementTree as ET
 from typing import Dict, List, Optional
 
-
-USER_AGENT = "research-agent-skills/0.1.0 (mailto:academic-tools@users.noreply.github.com)"
+USER_AGENT = "research-agent-skills/0.1.0-alpha (mailto:academic-tools@users.noreply.github.com)"
+MAX_RESULTS = 100
 
 
 def clean_text(text: Optional[str]) -> str:
-    if not text:
-        return ""
-    return re.sub(r"\s+", " ", text).strip()
+    return re.sub(r"\s+", " ", text).strip() if text else ""
 
 
 def generate_cite_key(authors: List[str], year: str, title: str) -> str:
     first_author = "unknown"
     if authors:
-        first_author = authors[0].split()[-1].lower()
-        first_author = re.sub(r"\W+", "", first_author)
-
+        first_author = re.sub(r"\W+", "", authors[0].split()[-1].lower()) or "unknown"
     first_word = "paper"
-    words = [w.lower() for w in re.findall(r"[a-zA-Z0-9]+", title)]
     stopwords = {"a", "an", "the", "in", "on", "of", "and", "for", "to", "with", "at", "by"}
-    for w in words:
-        if w not in stopwords:
-            first_word = w
+    for word in re.findall(r"[A-Za-z0-9]+", title.lower()):
+        if word not in stopwords:
+            first_word = word
             break
-
-    yr = year if year else "nd"
-    return f"{first_author}{yr}{first_word}"
+    return f"{first_author}{year or 'nd'}{first_word}"
 
 
-def search_arxiv(query: str, limit: int = 5) -> List[Dict]:
+def _provider_result(source: str, results=None, error=None) -> Dict:
+    return {
+        "source": source,
+        "status": "error" if error else "ok",
+        "error": str(error) if error else None,
+        "results": results or [],
+    }
+
+
+def search_arxiv(query: str, limit: int = 5) -> Dict:
     encoded_query = urllib.parse.quote(query)
-    url = f"http://export.arxiv.org/api/query?search_query=all:{encoded_query}&start=0&max_results={limit}"
-    req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
-
+    url = f"https://export.arxiv.org/api/query?search_query=all:{encoded_query}&start=0&max_results={limit}"
+    request = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
     try:
-        with urllib.request.urlopen(req, timeout=20) as resp:
-            xml_data = resp.read()
-    except Exception as e:
-        print(f"Warning: arXiv search failed: {e}", file=sys.stderr)
-        return []
-
-    root = ET.fromstring(xml_data)
-    ns = {"atom": "http://www.w3.org/2005/Atom", "arxiv": "http://arxiv.org/schemas/atom"}
-
+        with urllib.request.urlopen(request, timeout=20) as response:
+            root = ET.fromstring(response.read())
+    except Exception as exc:
+        return _provider_result("arxiv", error=f"arXiv request or XML parsing failed: {exc}")
+    namespace = {"atom": "http://www.w3.org/2005/Atom"}
     results = []
-    for entry in root.findall("atom:entry", ns):
-        title_elem = entry.find("atom:title", ns)
-        title = clean_text(title_elem.text) if title_elem is not None else "Untitled"
-
-        summary_elem = entry.find("atom:summary", ns)
-        summary = clean_text(summary_elem.text) if summary_elem is not None else ""
-
-        id_elem = entry.find("atom:id", ns)
-        raw_id = id_elem.text.strip() if id_elem is not None else ""
-        arxiv_match = re.search(r"(\d{4}\.\d{4,5}(?:v\d+)?)", raw_id)
-        arxiv_id = arxiv_match.group(1) if arxiv_match else raw_id
-
-        published_elem = entry.find("atom:published", ns)
-        year = published_elem.text[:4] if published_elem is not None and published_elem.text else ""
-
-        authors = []
-        for author_elem in entry.findall("atom:author", ns):
-            name = author_elem.find("atom:name", ns)
-            if name is not None and name.text:
-                authors.append(clean_text(name.text))
-
-        pdf_link = f"https://arxiv.org/pdf/{arxiv_id}.pdf" if arxiv_id else ""
-        cite_key = generate_cite_key(authors, year, title)
-
-        author_str = " and ".join(authors) if authors else "Unknown"
-        bibtex = f"""@article{{{cite_key},
-  author    = {{{author_str}}},
-  title     = {{{title}}},
-  journal   = {{arXiv preprint arXiv:{arxiv_id}}},
-  year      = {{{year}}},
-  eprint    = {{{arxiv_id}}},
-  archivePrefix = {{arXiv}}
-}}"""
-
+    for entry in root.findall("atom:entry", namespace):
+        title_element = entry.find("atom:title", namespace)
+        summary_element = entry.find("atom:summary", namespace)
+        id_element = entry.find("atom:id", namespace)
+        published_element = entry.find("atom:published", namespace)
+        title = clean_text(title_element.text if title_element is not None else None) or "Untitled"
+        raw_id = clean_text(id_element.text if id_element is not None else None)
+        identifier_match = re.search(r"(\d{4}\.\d{4,5}(?:v\d+)?)", raw_id)
+        identifier = identifier_match.group(1) if identifier_match else raw_id
+        year = (published_element.text or "")[:4] if published_element is not None else ""
+        authors = [
+            clean_text(name.text)
+            for author in entry.findall("atom:author", namespace)
+            for name in [author.find("atom:name", namespace)]
+            if name is not None and name.text
+        ]
+        key = generate_cite_key(authors, year, title)
+        author_string = " and ".join(authors) if authors else "Unknown"
+        bibtex = (
+            f"@article{{{key},\n  author = {{{author_string}}},\n  title = {{{title}}},\n"
+            f"  journal = {{arXiv preprint arXiv:{identifier}}},\n  year = {{{year}}},\n"
+            f"  eprint = {{{identifier}}},\n  archivePrefix = {{arXiv}}\n}}"
+        )
         results.append({
-            "source": "arxiv",
-            "title": title,
-            "authors": authors,
-            "year": year,
-            "id": arxiv_id,
-            "url": f"https://arxiv.org/abs/{arxiv_id}",
-            "pdf_url": pdf_link,
-            "abstract": summary,
-            "cite_key": cite_key,
-            "bibtex": bibtex
+            "source": "arxiv", "title": title, "authors": authors, "year": year,
+            "id": identifier, "url": f"https://arxiv.org/abs/{identifier}",
+            "pdf_url": f"https://arxiv.org/pdf/{identifier}.pdf" if identifier else "",
+            "abstract": clean_text(summary_element.text if summary_element is not None else None),
+            "cite_key": key, "bibtex": bibtex,
+            "record_note": "Candidate metadata from arXiv; not peer-review or content verification.",
         })
+    return _provider_result("arxiv", results=results)
 
-    return results
 
-
-def search_crossref(query: str, limit: int = 5) -> List[Dict]:
-    params = urllib.parse.urlencode({
-        "query": query,
-        "rows": limit,
-        "mailto": "academic-tools@users.noreply.github.com"
-    })
-    url = f"https://api.crossref.org/works?{params}"
-    req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
-
+def search_crossref(query: str, limit: int = 5) -> Dict:
+    parameters = urllib.parse.urlencode({"query": query, "rows": limit, "mailto": "academic-tools@users.noreply.github.com"})
+    request = urllib.request.Request(f"https://api.crossref.org/works?{parameters}", headers={"User-Agent": USER_AGENT})
     try:
-        with urllib.request.urlopen(req, timeout=20) as resp:
-            data = json.loads(resp.read().decode("utf-8"))
-    except Exception as e:
-        print(f"Warning: CrossRef search failed: {e}", file=sys.stderr)
-        return []
-
-    items = data.get("message", {}).get("items", [])
+        with urllib.request.urlopen(request, timeout=20) as response:
+            data = json.loads(response.read().decode("utf-8"))
+        items = data["message"]["items"]
+        if not isinstance(items, list):
+            raise ValueError("message.items is not a list")
+    except Exception as exc:
+        return _provider_result("crossref", error=f"Crossref request or JSON parsing failed: {exc}")
     results = []
-
     for item in items:
-        titles = item.get("title", [])
-        title = clean_text(titles[0]) if titles else "Untitled"
-
-        raw_authors = item.get("author", [])
-        authors = []
-        for a in raw_authors:
-            given = a.get("given", "")
-            family = a.get("family", "")
-            name = f"{given} {family}".strip()
-            if name:
-                authors.append(name)
-
-        year = ""
-        published = item.get("published-print") or item.get("published-online") or item.get("created")
-        if published and "date-parts" in published:
-            parts = published["date-parts"]
-            if parts and parts[0]:
-                year = str(parts[0][0])
-
-        doi = item.get("DOI", "")
-        container = item.get("container-title", [])
-        venue = container[0] if container else ""
-
-        cite_key = generate_cite_key(authors, year, title)
-        author_str = " and ".join(authors) if authors else "Unknown"
-
-        bibtex = f"""@article{{{cite_key},
-  author    = {{{author_str}}},
-  title     = {{{title}}},
-  journal   = {{{venue}}},
-  year      = {{{year}}},
-  doi       = {{{doi}}}
-}}"""
-
-        results.append({
-            "source": "crossref",
-            "title": title,
-            "authors": authors,
-            "year": year,
-            "id": doi,
-            "url": f"https://doi.org/{doi}" if doi else item.get("URL", ""),
-            "abstract": clean_text(item.get("abstract", "")),
-            "cite_key": cite_key,
-            "bibtex": bibtex
-        })
-
-    return results
+        try:
+            titles = item.get("title") or []
+            title = clean_text(titles[0]) if titles else "Untitled"
+            authors = [
+                f"{author.get('given', '')} {author.get('family', '')}".strip()
+                for author in item.get("author", [])
+                if f"{author.get('given', '')} {author.get('family', '')}".strip()
+            ]
+            published = item.get("published-print") or item.get("published-online") or item.get("created") or {}
+            parts = published.get("date-parts") or []
+            year = str(parts[0][0]) if parts and parts[0] else ""
+            doi = item.get("DOI", "")
+            containers = item.get("container-title") or []
+            venue = containers[0] if containers else ""
+            key = generate_cite_key(authors, year, title)
+            author_string = " and ".join(authors) if authors else "Unknown"
+            bibtex = (
+                f"@article{{{key},\n  author = {{{author_string}}},\n  title = {{{title}}},\n"
+                f"  journal = {{{venue}}},\n  year = {{{year}}},\n  doi = {{{doi}}}\n}}"
+            )
+            results.append({
+                "source": "crossref", "title": title, "authors": authors, "year": year,
+                "id": doi, "url": f"https://doi.org/{doi}" if doi else item.get("URL", ""),
+                "abstract": clean_text(item.get("abstract", "")), "cite_key": key, "bibtex": bibtex,
+                "record_note": "Candidate metadata from Crossref; publication and content require independent validation.",
+            })
+        except (AttributeError, IndexError, TypeError, ValueError) as exc:
+            return _provider_result("crossref", results=results, error=f"Malformed Crossref item: {exc}")
+    return _provider_result("crossref", results=results)
 
 
-def search_all(query: str, limit: int = 5, source: str = "all", min_year: Optional[int] = None) -> List[Dict]:
+def search_all(query: str, limit: int = 5, source: str = "all", min_year: Optional[int] = None) -> Dict:
+    providers = []
+    if source in {"arxiv", "all"}:
+        providers.append(search_arxiv(query, limit))
+    if source in {"crossref", "all"}:
+        providers.append(search_crossref(query, limit))
+    combined = [record for provider in providers for record in provider["results"]]
+    seen = set()
     results = []
-    if source in ["arxiv", "all"]:
-        results.extend(search_arxiv(query, limit=limit))
-    if source in ["crossref", "all"]:
-        results.extend(search_crossref(query, limit=limit))
-
-    # Deduplicate by normalized title
-    seen_titles = set()
-    unique_results = []
-    for r in results:
-        norm_title = re.sub(r"\W+", "", r["title"].lower())
-        if norm_title in seen_titles:
+    for record in combined:
+        normalized = re.sub(r"\W+", "", record["title"].lower())
+        if normalized in seen:
             continue
-        seen_titles.add(norm_title)
-
-        if min_year and r.get("year"):
+        if min_year and record.get("year"):
             try:
-                if int(r["year"]) < min_year:
+                if int(record["year"]) < min_year:
                     continue
             except ValueError:
                 pass
+        seen.add(normalized)
+        results.append(record)
+    failed = sum(provider["status"] == "error" for provider in providers)
+    status = "ok" if failed == 0 else ("failure" if failed == len(providers) else "partial_failure")
+    return {
+        "status": status,
+        "results": results[:limit],
+        "sources": {provider["source"]: {"status": provider["status"], "error": provider["error"], "result_count": len(provider["results"])} for provider in providers},
+        "scope_note": "Candidate discovery only; results are not labeled peer-reviewed or fully verified.",
+    }
 
-        unique_results.append(r)
 
-    return unique_results[:limit]
-
-
-def main():
-    parser = argparse.ArgumentParser(description="Search scholarly literature and generate verified BibTeX citations.")
-    parser.add_argument("query", help="Search query (topics, keywords, or authors)")
-    parser.add_argument("--limit", "-n", type=int, default=5, help="Maximum results to return (default: 5)")
-    parser.add_argument("--source", choices=["arxiv", "crossref", "all"], default="all", help="Source repository")
-    parser.add_argument("--min-year", type=int, help="Filter papers published on or after this year")
-    parser.add_argument("--json", action="store_true", help="Output raw JSON data")
-    parser.add_argument("--bib", action="store_true", help="Output BibTeX entries only")
-    parser.add_argument("--append", "-a", help="Append retrieved BibTeX entries to a .bib file")
-
-    args = parser.parse_args()
-
-    results = search_all(args.query, limit=args.limit, source=args.source, min_year=args.min_year)
-
+def main(argv=None) -> int:
+    parser = argparse.ArgumentParser(description="Discover candidate records from arXiv and Crossref.")
+    parser.add_argument("query")
+    parser.add_argument(
+        "--limit", "-n", type=int, default=5,
+        help=f"maximum combined results (1-{MAX_RESULTS}; default: 5)",
+    )
+    parser.add_argument("--source", choices=["arxiv", "crossref", "all"], default="all")
+    parser.add_argument("--min-year", type=int)
+    output_group = parser.add_mutually_exclusive_group()
+    output_group.add_argument("--json", action="store_true")
+    output_group.add_argument("--bib", action="store_true")
+    parser.add_argument("--append", "-a")
+    args = parser.parse_args(argv)
+    if args.append and not args.bib:
+        parser.error("--append requires --bib")
+    if not 1 <= args.limit <= MAX_RESULTS:
+        parser.error(f"--limit must be between 1 and {MAX_RESULTS}")
+    report = search_all(args.query, args.limit, args.source, args.min_year)
+    results = report["results"]
     if args.json:
-        print(json.dumps(results, indent=2))
-        return
-
-    if args.bib:
-        bib_output = "\n\n".join(r["bibtex"] for r in results)
-        print(bib_output)
-        if args.append and bib_output:
-            with open(args.append, "a", encoding="utf-8") as f:
-                f.write("\n\n" + bib_output + "\n")
-            print(f"\n[OK] Appended {len(results)} entries to {args.append}", file=sys.stderr)
-        return
-
-    # Default human-readable output
-    print(f"\n================ SCHOLARLY LITERATURE SEARCH ================")
-    print(f"Query:   '{args.query}'")
-    print(f"Results: {len(results)} paper(s) found")
-    print("=============================================================\n")
-
-    for i, r in enumerate(results, 1):
-        print(f"[{i}] {r['title']}")
-        print(f"    Authors: {', '.join(r['authors'][:3])}{' et al.' if len(r['authors']) > 3 else ''}")
-        print(f"    Year:    {r['year']} | Source: {r['source'].upper()} | Key: {r['cite_key']}")
-        print(f"    URL:     {r['url']}")
-        if r.get("abstract"):
-            snippet = r["abstract"][:200] + ("..." if len(r["abstract"]) > 200 else "")
-            print(f"    Abstract: {snippet}")
-        print()
-
-    if args.append and results:
-        bib_output = "\n\n".join(r["bibtex"] for r in results)
-        with open(args.append, "a", encoding="utf-8") as f:
-            f.write("\n\n" + bib_output + "\n")
-        print(f"[OK] Appended {len(results)} entries to {args.append}")
+        print(json.dumps(report, indent=2))
+    elif args.bib:
+        output = "\n\n".join(record["bibtex"] for record in results)
+        print(output)
+        if args.append and output:
+            with open(args.append, "a", encoding="utf-8") as handle:
+                handle.write("\n\n" + output + "\n")
+    else:
+        print("LITERATURE CANDIDATE DISCOVERY")
+        print(report["scope_note"])
+        print(f"Status: {report['status']} | Results: {len(results)}")
+        for source_name, source_status in report["sources"].items():
+            print(f"Source {source_name}: {source_status['status']}" + (f" - {source_status['error']}" if source_status["error"] else ""))
+        for index, record in enumerate(results, 1):
+            print(f"[{index}] {record['title']}\n    {record['url']}")
+    return 0 if report["status"] == "ok" else 1
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

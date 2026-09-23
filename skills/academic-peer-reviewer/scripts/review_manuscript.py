@@ -1,9 +1,8 @@
 #!/usr/bin/env python3
-"""
-review_manuscript.py
-Adversarial academic peer-review simulation ("Reviewer #2") and manuscript auditor.
-Evaluates CARS model adherence, hype detection, unsubstantiated claims, and scholarly rigor.
-Zero external dependencies.
+"""Deterministic lexical/structural manuscript preflight.
+
+This tool reports indicators for human review. It does not assess novelty,
+mathematical correctness, claim truth, or publication suitability.
 """
 
 import argparse
@@ -11,8 +10,7 @@ import json
 import os
 import re
 import sys
-from typing import Dict, List, Tuple
-
+from typing import Dict, List, Optional, Tuple
 
 HYPE_PATTERNS = [
     (r"\brevolutionary\b", "revolutionary", "notable / significant"),
@@ -26,185 +24,187 @@ HYPE_PATTERNS = [
     (r"\bunquestionabl[ey]\b", "unquestionably", "evidently / clearly indicated"),
     (r"\bperfect(?:ly)?\b", "perfect", "optimal / reliable"),
 ]
-
 VAGUE_QUANTIFIERS = [
-    (r"\ba lot of\b", "a lot of", "numerous / substantial"),
-    (r"\bhuge\b", "huge", "substantial / extensive"),
-    (r"\btons of\b", "tons of", "numerous / abundant"),
-    (r"\bvery (?:good|bad|big|small|high|low)\b", "very [adjective]", "quantify with exact metrics"),
-    (r"\bextremely (?:good|high|fast)\b", "extremely [adjective]", "substantially / markedly"),
+    (r"\ba lot of\b", "a lot of", "use a measured quantity"),
+    (r"\bhuge\b", "huge", "use a measured quantity"),
+    (r"\btons of\b", "tons of", "use a measured quantity"),
+    (r"\bvery (?:good|bad|big|small|high|low)\b", "very [adjective]", "report an exact metric"),
+    (r"\bextremely (?:good|high|fast)\b", "extremely [adjective]", "report an exact metric"),
 ]
-
+CARS_MOVE1_MARKERS = [r"\b(?:important|critical|central|widely studied|increasing attention)\b", r"\bprior (?:work|research|studies)\b"]
 CARS_MOVE2_MARKERS = [
     r"\bhowever\b", r"\bnevertheless\b", r"\byet\b", r"\bdespite\b",
-    r"\bremains? (?:challenging|unclear|limited)\b", r"\bgap\b",
-    r"\blimitation\b", r"\bdrawback\b", r"\bfails? to\b", r"\black of\b"
+    r"\bremains? (?:challenging|unclear|limited)\b", r"\bresearch gap\b",
+    r"\blimitation\b", r"\bdrawback\b", r"\bfails? to\b", r"\black of\b",
+]
+CARS_MOVE3_MARKERS = [
+    r"\bin this (?:paper|study|work|article|thesis)\b", r"\bwe propose\b",
+    r"\bwe introduce\b", r"\bwe present\b", r"\bthis research aims to\b",
+    r"\bthe objective of this study\b",
+]
+LIMITATIONS = [
+    "Findings are lexical and structural indicators, not publication decisions.",
+    "The tool does not verify claims, citations, novelty, methods, statistics, or mathematics.",
+    "CARS indicators require human interpretation and may produce false positives or negatives.",
 ]
 
-CARS_MOVE3_MARKERS = [
-    r"\bin this (?:paper|study|work|article|thesis)\b",
-    r"\bwe propose\b", r"\bwe introduce\b", r"\bwe present\b",
-    r"\bthis research aims to\b", r"\bthe objective of this study\b"
-]
+
+def extract_introduction(text: str) -> Tuple[Optional[str], Optional[int], str]:
+    """Return Introduction body, 1-based starting line, and extraction status."""
+    lines = text.splitlines()
+    for index, line in enumerate(lines):
+        md = re.match(r"^\s*(#{1,6})\s+(?:\d+(?:\.\d+)*\s+)?introduction\s*$", line, re.I)
+        if md:
+            level = len(md.group(1))
+            end = len(lines)
+            for candidate in range(index + 1, len(lines)):
+                next_heading = re.match(r"^\s*(#{1,6})\s+", lines[candidate])
+                if next_heading and len(next_heading.group(1)) <= level:
+                    end = candidate
+                    break
+            return "\n".join(lines[index + 1:end]), index + 2, "markdown-heading"
+        latex = re.match(r"^\s*\\(chapter|section|section\*|subsection|subsection\*)\{\s*introduction\s*\}\s*$", line, re.I)
+        if latex:
+            command = latex.group(1).replace("*", "")
+            rank = {"chapter": 1, "section": 2, "subsection": 3}[command]
+            end = len(lines)
+            for candidate in range(index + 1, len(lines)):
+                heading = re.match(r"^\s*\\(chapter|section|section\*|subsection|subsection\*)\{", lines[candidate], re.I)
+                if heading:
+                    next_rank = {"chapter": 1, "section": 2, "subsection": 3}[heading.group(1).replace("*", "").lower()]
+                    if next_rank <= rank:
+                        end = candidate
+                        break
+            return "\n".join(lines[index + 1:end]), index + 2, "latex-heading"
+    return None, None, "unknown-no-introduction-heading"
+
+
+def _indicator_evidence(text: str, start_line: int, patterns: List[str]) -> List[Dict]:
+    evidence = []
+    for offset, line in enumerate(text.splitlines()):
+        for pattern in patterns:
+            match = re.search(pattern, line, re.I)
+            if match:
+                evidence.append({
+                    "line": start_line + offset,
+                    "span": match.group(0),
+                    "context": line.strip()[:160],
+                })
+    return evidence
+
+
+def _language_findings(lines: List[str], patterns: List[Tuple[str, str, str]]) -> List[Dict]:
+    findings = []
+    for line_number, line in enumerate(lines, 1):
+        for pattern, term, suggestion in patterns:
+            for match in re.finditer(pattern, line, re.I):
+                findings.append({
+                    "line": line_number,
+                    "term": term,
+                    "span": match.group(0),
+                    "context": line.strip()[:160],
+                    "recommendation": suggestion,
+                })
+    return findings
 
 
 def audit_manuscript(text: str, filename: str = "manuscript") -> Dict:
     lines = text.splitlines()
     word_count = len(re.findall(r"\b\w+\b", text))
-    paragraph_count = len([p for p in text.split("\n\n") if p.strip()])
+    citations = re.findall(r"(?:\\cite\*?\{[^}]+\}|\[@[^\]]+\]|(?<![\w.\-])@[A-Za-z0-9_:.\-]+)", text)
+    hype = _language_findings(lines, HYPE_PATTERNS)
+    vague = _language_findings(lines, VAGUE_QUANTIFIERS)
+    intro, intro_start, extraction = extract_introduction(text)
 
-    # Citation counts
-    citations = re.findall(r"(?:\\cite\*?\{[^}]+\}|\[@[^\]]+\]|(?<![\w\.\-])@[a-zA-Z0-9_:\.\-]+)", text)
-    citation_density = (len(citations) / word_count * 1000) if word_count > 0 else 0
+    cars: Dict[str, object] = {
+        "introduction_extraction": extraction,
+        "move_1_territory": None,
+        "move_2_niche_gap_identified": None,
+        "move_3_occupying_niche_declared": None,
+        "evidence": {"move_1": [], "move_2": [], "move_3": []},
+        "interpretation": "Indicators only; absence or presence is not a semantic CARS judgment.",
+    }
+    if intro is not None and intro_start is not None:
+        move1 = _indicator_evidence(intro, intro_start, CARS_MOVE1_MARKERS)
+        move2 = _indicator_evidence(intro, intro_start, CARS_MOVE2_MARKERS)
+        move3 = _indicator_evidence(intro, intro_start, CARS_MOVE3_MARKERS)
+        cars.update({
+            "move_1_territory": bool(move1),
+            "move_2_niche_gap_identified": bool(move2),
+            "move_3_occupying_niche_declared": bool(move3),
+            "evidence": {"move_1": move1, "move_2": move2, "move_3": move3},
+        })
 
-    # Hype detection
-    hype_findings = []
-    for line_num, line in enumerate(lines, 1):
-        for pat, word, suggestion in HYPE_PATTERNS:
-            if re.search(pat, line, re.IGNORECASE):
-                hype_findings.append({
-                    "line": line_num,
-                    "term": word,
-                    "context": line.strip()[:100],
-                    "recommendation": f"Replace with more neutral academic phrasing (e.g., '{suggestion}')."
-                })
-
-    # Vague language
-    vague_findings = []
-    for line_num, line in enumerate(lines, 1):
-        for pat, term, suggestion in VAGUE_QUANTIFIERS:
-            if re.search(pat, line, re.IGNORECASE):
-                vague_findings.append({
-                    "line": line_num,
-                    "term": term,
-                    "context": line.strip()[:100],
-                    "recommendation": f"Avoid informal or vague quantifiers. {suggestion}."
-                })
-
-    # CARS Model check in Introduction (first 25% of text or section starting with Introduction)
-    intro_sample = text[: max(int(len(text) * 0.35), 2000)]
-    has_move2 = any(re.search(pat, intro_sample, re.IGNORECASE) for pat in CARS_MOVE2_MARKERS)
-    has_move3 = any(re.search(pat, intro_sample, re.IGNORECASE) for pat in CARS_MOVE3_MARKERS)
-
-    # Statistical & Empirical rigor checks
-    empirical_keywords = ["accuracy", "rmse", "mape", "f1", "precision", "recall", "map", "latency", "fps"]
-    metrics_found = [m for m in empirical_keywords if re.search(rf"\b{m}\b", text, re.IGNORECASE)]
-
-    comparative_claims = re.findall(r"\b(?:outperforms?|superior|much better|significantly higher)\b", text, re.IGNORECASE)
-
-    # Scoring out of 5
-    tone_score = max(1.0, 5.0 - (len(hype_findings) * 0.5) - (len(vague_findings) * 0.2))
-    structure_score = 5.0
-    if not has_move2:
-        structure_score -= 1.5
-    if not has_move3:
-        structure_score -= 1.0
-
-    evidence_score = 5.0
-    if comparative_claims and not metrics_found:
-        evidence_score -= 2.0
-    if citation_density < 5.0 and word_count > 300:
-        evidence_score -= 1.5
-
-    overall_avg = (tone_score + structure_score + evidence_score) / 3.0
-
-    if overall_avg >= 4.2 and not hype_findings:
-        recommendation = "Accept / Minor Revision"
-    elif overall_avg >= 3.0:
-        recommendation = "Major Revision"
+    empirical_keywords = ["accuracy", "rmse", "mape", "f1", "precision", "recall", "latency", "fps"]
+    metrics = [item for item in empirical_keywords if re.search(rf"\b{item}\b", text, re.I)]
+    comparative = [
+        {"line": n, "span": match.group(0), "context": line.strip()[:160]}
+        for n, line in enumerate(lines, 1)
+        for match in re.finditer(r"\b(?:outperforms?|superior|much better|significantly higher)\b", line, re.I)
+    ]
+    reasons = []
+    if intro is None:
+        reasons.append("Introduction section could not be identified; CARS indicators are unknown.")
     else:
-        recommendation = "Reject / Resubmit"
-
+        for move, label in [
+            ("move_1_territory", "Move 1"), ("move_2_niche_gap_identified", "Move 2"),
+            ("move_3_occupying_niche_declared", "Move 3"),
+        ]:
+            if cars[move] is False:
+                reasons.append(f"No lexical indicator was found for {label} in the extracted Introduction.")
+    if hype:
+        reasons.append(f"Found {len(hype)} promotional-language indicator(s).")
+    if vague:
+        reasons.append(f"Found {len(vague)} vague-quantifier indicator(s).")
+    if comparative and not metrics:
+        reasons.append("Comparative language was found without a recognized metric token.")
+    status = "review-needed" if reasons else "pass-with-warnings"
+    density = len(citations) / word_count * 1000 if word_count else 0
     return {
         "manuscript": filename,
+        "preflight_status": status,
+        "status_reasons": reasons,
+        "limitations": LIMITATIONS,
         "statistics": {
             "word_count": word_count,
-            "paragraphs": paragraph_count,
+            "paragraphs": len([p for p in text.split("\n\n") if p.strip()]),
             "citations_detected": len(citations),
-            "citations_per_1000_words": round(citation_density, 2)
+            "citations_per_1000_words": round(density, 2),
         },
-        "cars_model_assessment": {
-            "move_1_territory": True,
-            "move_2_niche_gap_identified": has_move2,
-            "move_3_occupying_niche_declared": has_move3
-        },
-        "scores": {
-            "scholarly_tone": round(tone_score, 1),
-            "introduction_structure": round(structure_score, 1),
-            "empirical_evidence_support": round(evidence_score, 1),
-            "overall_rating": round(overall_avg, 1)
-        },
-        "recommendation": recommendation,
-        "hype_findings": hype_findings,
-        "vague_findings": vague_findings,
-        "metrics_found": metrics_found,
-        "comparative_claims_count": len(comparative_claims)
+        "cars_model_assessment": cars,
+        "hype_findings": hype,
+        "vague_findings": vague,
+        "metrics_found": metrics,
+        "comparative_claims": comparative,
     }
 
 
-def main():
-    parser = argparse.ArgumentParser(description="Adversarial peer review and academic quality auditor.")
-    parser.add_argument("manuscript", help="Path to manuscript file (.md, .tex)")
-    parser.add_argument("--json", action="store_true", help="Output machine-readable JSON")
-    parser.add_argument("--strict", action="store_true", help="Exit with code 1 if Major Revision or Reject")
-
-    args = parser.parse_args()
-
-    if not os.path.isfile(args.manuscript):
-        print(f"Error: File not found: {args.manuscript}", file=sys.stderr)
-        sys.exit(1)
-
-    with open(args.manuscript, "r", encoding="utf-8", errors="ignore") as f:
-        content = f.read()
-
-    report = audit_manuscript(content, filename=os.path.basename(args.manuscript))
-
+def main(argv=None) -> int:
+    parser = argparse.ArgumentParser(description="Run deterministic lexical/structural manuscript preflight checks.")
+    parser.add_argument("manuscript", help="Markdown or LaTeX manuscript path")
+    parser.add_argument("--json", action="store_true", help="Output JSON")
+    parser.add_argument("--strict", action="store_true", help="Exit 1 when preflight status is review-needed")
+    args = parser.parse_args(argv)
+    try:
+        with open(args.manuscript, "r", encoding="utf-8") as handle:
+            content = handle.read()
+    except (OSError, UnicodeError) as exc:
+        print(f"Error: cannot read manuscript {args.manuscript}: {exc}", file=sys.stderr)
+        return 2
+    report = audit_manuscript(content, os.path.basename(args.manuscript))
     if args.json:
         print(json.dumps(report, indent=2))
     else:
-        stats = report["statistics"]
-        scores = report["scores"]
-        cars = report["cars_model_assessment"]
-
-        print("\n================ ADVERSARIAL PEER REVIEW REPORT ================")
-        print(f"Manuscript:     {report['manuscript']}")
-        print(f"Word Count:     {stats['word_count']} words | Citations: {stats['citations_detected']} ({stats['citations_per_1000_words']} / 1k words)")
-        print(f"Recommendation: {report['recommendation']}")
-        print("-----------------------------------------------------------------")
-        print(f"  • Scholarly Tone & Objectivity:      {scores['scholarly_tone']} / 5.0")
-        print(f"  • Introduction CARS Structure:       {scores['introduction_structure']} / 5.0")
-        print(f"  • Empirical Evidence & Rigor:        {scores['empirical_evidence_support']} / 5.0")
-        print(f"  • Overall Evaluation:                {scores['overall_rating']} / 5.0")
-        print("=================================================================\n")
-
-        # CARS Model Feedback
-        print("🔍 CARS MODEL (INTRODUCTION ANALYSIS):")
-        print(f"  - Move 1 (Establish Field / Importance):   {'✅ Present' if cars['move_1_territory'] else '❌ Weak'}")
-        print(f"  - Move 2 (Identify Research Gap / Niche):   {'✅ Present' if cars['move_2_niche_gap_identified'] else '⚠️ Missing / Implicit'}")
-        print(f"  - Move 3 (Declare Specific Contributions): {'✅ Present' if cars['move_3_occupying_niche_declared'] else '⚠️ Missing / Implicit'}")
-        print()
-
-        # Hype & Inflated claims
-        if report["hype_findings"]:
-            print(f"⚠️  UNSCHOLARLY HYPE / INFLATED CLAIMS ({len(report['hype_findings'])} found):")
-            for h in report["hype_findings"]:
-                print(f"  Line {h['line']}: '{h['term']}' -> {h['recommendation']}")
-                print(f"    Context: \"{h['context']}\"")
-            print()
-
-        # Vague language
-        if report["vague_findings"]:
-            print(f"ℹ️  VAGUE QUANTIFIERS ({len(report['vague_findings'])} found):")
-            for v in report["vague_findings"]:
-                print(f"  Line {v['line']}: '{v['term']}' -> {v['recommendation']}")
-            print()
-
-        if not report["hype_findings"] and not report["vague_findings"] and cars["move_2_niche_gap_identified"]:
-            print("✅ Manuscript demonstrates commendable scholarly restraint and structural compliance.")
-
-    if args.strict and report["recommendation"] != "Accept / Minor Revision":
-        sys.exit(1)
+        print("MANUSCRIPT PREFLIGHT (indicators only; not a publication decision)")
+        print(f"Manuscript: {report['manuscript']}")
+        print(f"Status: {report['preflight_status']}")
+        for reason in report["status_reasons"]:
+            print(f"- {reason}")
+        print("Limitations:")
+        for limitation in report["limitations"]:
+            print(f"- {limitation}")
+    return 1 if args.strict and report["preflight_status"] == "review-needed" else 0
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

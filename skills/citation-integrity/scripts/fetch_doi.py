@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 fetch_doi.py
-Resolves DOI or arXiv identifiers directly to verified BibTeX entries using official APIs.
+Retrieves candidate BibTeX records for explicit DOI or arXiv identifiers.
 Zero external dependencies (uses standard library urllib).
 """
 
@@ -50,7 +50,7 @@ def fetch_arxiv_bibtex(arxiv_id: str) -> str:
         raise ValueError(f"Invalid arXiv identifier format: {arxiv_id}")
     clean_id = m.group(1)
 
-    url = f"http://export.arxiv.org/api/query?id_list={clean_id}"
+    url = f"https://export.arxiv.org/api/query?id_list={clean_id}"
     req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
 
     try:
@@ -80,7 +80,7 @@ def fetch_arxiv_bibtex(arxiv_id: str) -> str:
     author_str = " and ".join(authors) if authors else "Unknown"
 
     published_elem = entry.find("atom:published", ns)
-    year = published_elem.text[:4] if published_elem is not None and published_elem.text else "2024"
+    year = published_elem.text[:4] if published_elem is not None and published_elem.text else ""
 
     # Generate citation key: FirstAuthorSurnameYear
     first_surname = authors[0].split()[-1].lower() if authors else "arxiv"
@@ -103,7 +103,7 @@ def fetch_arxiv_bibtex(arxiv_id: str) -> str:
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Fetch verified BibTeX from DOI or arXiv identifier.")
+    parser = argparse.ArgumentParser(description="Fetch candidate BibTeX for an explicit DOI or arXiv identifier.")
     parser.add_argument("identifier", help="DOI (e.g. 10.1145/...) or arXiv ID (e.g. 2301.00001)")
     parser.add_argument("--append", "-a", help="Append the BibTeX entry to a specified .bib file")
 

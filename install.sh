@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Universal installer wrapper for research-agent-skills
+# Optional Bash wrapper. Cross-platform entry: python3 scripts/install.py
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"

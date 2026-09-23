@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 build_thai_docx.py
-Generates academic Word DOCX documents adhering to Thai university thesis formatting:
+Generates Word DOCX drafts using a generic Thai academic formatting preset:
 - Font: TH Sarabun New (16pt body, 18pt bold Heading 1, 16pt bold Heading 2)
 - Line Spacing: 1.5 lines (360 twips)
 - Margins: Top 1.5", Left 1.5", Bottom 1.0", Right 1.0"
@@ -15,11 +15,29 @@ import io
 import os
 import re
 import sys
+import tempfile
 import zipfile
+from pathlib import Path
 from typing import List, Tuple
 
 
 THAI_DIGITS = str.maketrans("0123456789", "๐๑๒๓๔๕๖๗๘๙")
+
+
+def validate_xml_characters(text: str) -> None:
+    """Reject characters that XML 1.0 cannot represent."""
+    for index, character in enumerate(text):
+        codepoint = ord(character)
+        valid = (
+            codepoint in (0x9, 0xA, 0xD)
+            or 0x20 <= codepoint <= 0xD7FF
+            or 0xE000 <= codepoint <= 0xFFFD
+            or 0x10000 <= codepoint <= 0x10FFFF
+        )
+        if not valid:
+            raise ValueError(
+                f"XML 1.0-invalid control character U+{codepoint:04X} at character {index}"
+            )
 
 
 def to_buddhist_era(text: str) -> str:
@@ -62,10 +80,10 @@ def build_run_xml(text: str, bold: bool = False, italic: bool = False) -> str:
 
 
 def parse_inline_markdown(line: str) -> str:
-    """Parses bold, italic, and regular text into OpenXML runs."""
+    """Parse basic inline Markdown while preserving every unmatched character."""
     runs_xml = []
-    # Pattern to match **bold**, *italic*, or plain text
-    pattern = re.compile(r"(\*\*.*?\*\*|\*.*?\*|`.*?`|[^*`]+)")
+    # The final alternatives guarantee unmatched delimiters stay visible.
+    pattern = re.compile(r"(\*\*[^*\n]+\*\*|\*[^*\n]+\*|`[^`\n]+`|[^*`]+|\*|`)")
     tokens = pattern.findall(line)
 
     for token in tokens:
@@ -243,7 +261,7 @@ def markdown_to_document_xml(markdown_text: str, apply_be: bool = True, use_thai
     if in_table and table_rows:
         body_elements.append(build_table_xml(table_rows))
 
-    # Page settings: Thai Thesis standard
+    # Page settings: generic Thai academic preset; institutions may differ.
     # Margins: Top 1.5" (2160 twips), Left 1.5" (2160 twips), Bottom 1.0" (1440 twips), Right 1.0" (1440 twips)
     # Page size: A4 (11906 x 16838 twips)
     sect_pr = """<w:sectPr>
@@ -262,7 +280,12 @@ def markdown_to_document_xml(markdown_text: str, apply_be: bool = True, use_thai
     return doc_xml
 
 
-def create_thai_docx(markdown_content: str, output_path: str, apply_be: bool = True, use_thai_num: bool = False):
+def create_thai_docx(markdown_content: str, output_path: str, apply_be: bool = True,
+                     use_thai_num: bool = False, force: bool = False):
+    validate_xml_characters(markdown_content)
+    output = Path(output_path)
+    if (output.exists() or output.is_symlink()) and not force:
+        raise FileExistsError(f"Output already exists: {output} (use --force to replace it)")
     document_xml = markdown_to_document_xml(markdown_content, apply_be=apply_be, use_thai_num=use_thai_num)
 
     content_types_xml = """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
@@ -301,38 +324,93 @@ def create_thai_docx(markdown_content: str, output_path: str, apply_be: bool = T
       <w:spacing w:line="360" w:lineRule="auto" w:after="120"/>
     </w:pPr>
   </w:style>
+  <w:style w:type="paragraph" w:styleId="Heading1">
+    <w:name w:val="heading 1"/><w:basedOn w:val="Normal"/><w:qFormat/>
+    <w:rPr><w:b/><w:bCs/><w:sz w:val="36"/><w:szCs w:val="36"/></w:rPr>
+  </w:style>
+  <w:style w:type="paragraph" w:styleId="Heading2">
+    <w:name w:val="heading 2"/><w:basedOn w:val="Normal"/><w:qFormat/>
+    <w:rPr><w:b/><w:bCs/><w:sz w:val="32"/><w:szCs w:val="32"/></w:rPr>
+  </w:style>
+  <w:style w:type="paragraph" w:styleId="Heading3">
+    <w:name w:val="heading 3"/><w:basedOn w:val="Normal"/><w:qFormat/>
+    <w:rPr><w:b/><w:bCs/><w:sz w:val="32"/><w:szCs w:val="32"/></w:rPr>
+  </w:style>
 </w:styles>"""
 
-    with zipfile.ZipFile(output_path, "w", compression=zipfile.ZIP_DEFLATED) as zf:
-        zf.writestr("[Content_Types].xml", content_types_xml)
-        zf.writestr("_rels/.rels", rels_xml)
-        zf.writestr("word/_rels/document.xml.rels", doc_rels_xml)
-        zf.writestr("word/styles.xml", styles_xml)
-        zf.writestr("word/document.xml", document_xml)
+    output.parent.mkdir(parents=True, exist_ok=True)
+    file_descriptor, temporary_name = tempfile.mkstemp(
+        prefix=f".{output.name}.", suffix=".tmp", dir=str(output.parent)
+    )
+    os.close(file_descriptor)
+    try:
+        with zipfile.ZipFile(temporary_name, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+            zf.writestr("[Content_Types].xml", content_types_xml)
+            zf.writestr("_rels/.rels", rels_xml)
+            zf.writestr("word/_rels/document.xml.rels", doc_rels_xml)
+            zf.writestr("word/styles.xml", styles_xml)
+            zf.writestr("word/document.xml", document_xml)
+        if force:
+            os.replace(temporary_name, output)
+        else:
+            try:
+                # The temp file is on the same filesystem. link() publishes it atomically
+                # and fails rather than replacing an output created after our preflight check.
+                os.link(temporary_name, output)
+            except FileExistsError:
+                raise FileExistsError(
+                    f"Output already exists: {output} (use --force to replace it)"
+                ) from None
+            os.unlink(temporary_name)
+    except Exception:
+        try:
+            os.unlink(temporary_name)
+        except FileNotFoundError:
+            pass
+        raise
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Convert Markdown to Thai Academic DOCX with thesis typography.")
+    parser = argparse.ArgumentParser(
+        description="Convert Markdown to DOCX using a generic Thai academic formatting preset."
+    )
     parser.add_argument("input_md", help="Path to input Markdown file")
     parser.add_argument("--output", "-o", required=True, help="Path to output .docx file")
     parser.add_argument("--no-be", action="store_true", help="Disable automatic Buddhist Era (พ.ศ.) conversion")
     parser.add_argument("--thai-numerals", action="store_true", help="Convert Arabic numerals to Thai numerals (๐-๙)")
+    parser.add_argument("--force", action="store_true", help="Replace an existing output file")
 
     args = parser.parse_args()
+
+    if Path(args.input_md).resolve() == Path(args.output).resolve():
+        print("Error: input and output paths must be different", file=sys.stderr)
+        sys.exit(1)
 
     if not os.path.isfile(args.input_md):
         print(f"Error: File not found: {args.input_md}", file=sys.stderr)
         sys.exit(1)
 
-    with open(args.input_md, "r", encoding="utf-8") as f:
-        md_text = f.read()
+    try:
+        with open(args.input_md, "r", encoding="utf-8") as f:
+            md_text = f.read()
+    except UnicodeDecodeError as exc:
+        print(f"Error: input is not valid UTF-8: {exc}", file=sys.stderr)
+        sys.exit(1)
+    except OSError as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        sys.exit(1)
 
-    create_thai_docx(
-        md_text,
-        args.output,
-        apply_be=(not args.no_be),
-        use_thai_num=args.thai_numerals
-    )
+    try:
+        create_thai_docx(
+            md_text,
+            args.output,
+            apply_be=(not args.no_be),
+            use_thai_num=args.thai_numerals,
+            force=args.force,
+        )
+    except (OSError, ValueError, zipfile.BadZipFile) as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        sys.exit(1)
     print(f"[OK] Generated Thai Academic DOCX: {args.output}")
 
 
