@@ -2,6 +2,7 @@
 """Tests for the minimal Thai DOCX preset."""
 
 import os
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -116,6 +117,18 @@ class TestThaiAcademicDocx(unittest.TestCase):
         self.assertEqual(raised.exception.code, 1)
         self.assertIn("Error:", stderr.getvalue())
         self.assertIn("UTF-8", stderr.getvalue())
+
+    def test_cli_help_is_encodable_on_legacy_windows_code_page(self):
+        environment = os.environ.copy()
+        environment["PYTHONIOENCODING"] = "cp1252"
+        result = subprocess.run(
+            [sys.executable, build_thai_docx.__file__, "--help"],
+            capture_output=True,
+            env=environment,
+            check=False,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr.decode("cp1252"))
+        self.assertIn(b"Buddhist Era (BE)", result.stdout)
 
 
 if __name__ == "__main__":

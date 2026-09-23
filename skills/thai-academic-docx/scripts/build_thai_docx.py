@@ -376,8 +376,8 @@ def main():
     )
     parser.add_argument("input_md", help="Path to input Markdown file")
     parser.add_argument("--output", "-o", required=True, help="Path to output .docx file")
-    parser.add_argument("--no-be", action="store_true", help="Disable automatic Buddhist Era (พ.ศ.) conversion")
-    parser.add_argument("--thai-numerals", action="store_true", help="Convert Arabic numerals to Thai numerals (๐-๙)")
+    parser.add_argument("--no-be", action="store_true", help="Disable automatic Buddhist Era (BE) conversion")
+    parser.add_argument("--thai-numerals", action="store_true", help="Convert Arabic numerals to Thai numerals")
     parser.add_argument("--force", action="store_true", help="Replace an existing output file")
 
     args = parser.parse_args()
