@@ -1,0 +1,53 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+        python-version: ['3.9', '3.12']
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - name: Unit tests
+        run: python -m unittest discover -s tests -v
+      - name: Compile Python
+        run: python -m compileall -q scripts skills tests
+      - name: CLI help smoke checks
+        shell: bash
+        run: |
+          python scripts/install.py --help
+          python skills/citation-integrity/scripts/verify_citations.py --help
+          python skills/citation-integrity/scripts/fetch_doi.py --help
+          python skills/literature-discovery/scripts/search_papers.py --help
+          python skills/thai-academic-docx/scripts/build_thai_docx.py --help
+          python skills/academic-peer-reviewer/scripts/review_manuscript.py --help
+      - name: Diff and tracked artifact hygiene
+        shell: bash
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          BEFORE_SHA: ${{ github.event.before }}
+        run: |
+          if [[ "$GITHUB_EVENT_NAME" == "pull_request" ]]; then
+            git diff --check "$BASE_SHA...$GITHUB_SHA"
+          elif [[ "$BEFORE_SHA" =~ ^0+$ ]]; then
+            git diff-tree --check --root "$GITHUB_SHA"
+          else
+            git diff --check "$BEFORE_SHA..$GITHUB_SHA"
+          fi
+          test -z "$(git ls-files '*.pyc' '*.pyo' '*.docx')"
+          test -z "$(git ls-files | grep -E '(^|/)__pycache__/')"

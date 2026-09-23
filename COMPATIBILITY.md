@@ -1,27 +1,44 @@
-# Agent Compatibility Matrix
+# Agent compatibility (alpha)
 
-This document tracks empirical verification of skills across supported agent ecosystems. A skill is never marked as supported based on theory; each checkmark requires reproducible execution in that specific runtime.
+Compatibility has separate layers:
 
-## Verification Status Definitions
-- 🟢 **Verified:** Tested in a live agent session with recorded inputs and expected outputs.
-- 🟡 **Pending:** Implemented and structurally compliant, waiting for runtime verification.
-- ⚪ **Planned:** On the roadmap, not yet implemented.
-- 🔴 **Incompatible:** Known architectural limitation or unsupported feature.
+1. **Filesystem path:** the installer resolves and writes the intended directory.
+2. **Installation:** copy/symlink, manifest, rollback, and uninstall behavior succeeds.
+3. **Discovery:** a live agent runtime finds the installed `SKILL.md` package.
+4. **Invocation:** that runtime selects and executes the skill successfully.
 
-## Matrix
+Unit tests currently provide repository evidence for path resolution and installer behavior only. No committed live-runtime transcripts or fixtures establish discovery or invocation, so all runtime compatibility is **Pending**.
 
-| Skill Name | Claude Code | Hermes | Pi / OhMyPi | Antigravity (Gemini) | Codex / OpenAI | Notes |
-| :--- | :---: | :---: | :---: | :---: | :---: | :--- |
-| **Foundation & Installer** | 🟢 Verified | 🟢 Verified | 🟢 Verified | 🟢 Verified | 🟢 Verified | Automated test suite & path resolution |
-| **citation-integrity** | 🟢 Verified | 🟢 Verified | 🟢 Verified | 🟢 Verified | 🟢 Verified | Pure standard library, zero dependencies |
-| **literature-discovery** | 🟢 Verified | 🟢 Verified | 🟢 Verified | 🟢 Verified | 🟢 Verified | arXiv & CrossRef APIs, no keys required |
-| **thai-academic-docx** | 🟢 Verified | 🟢 Verified | 🟢 Verified | 🟢 Verified | 🟢 Verified | Pure Python standard OpenXML zip engine |
-| **academic-peer-reviewer**| 🟢 Verified | 🟢 Verified | 🟢 Verified | 🟢 Verified | 🟢 Verified | Adversarial reviewer, CARS & hype auditor |
+## Status definitions
 
-## Standard Installation Paths Checked
+- **Verified:** committed, reproducible evidence from the named live runtime covers the stated layer.
+- **Pending:** not yet supported by committed runtime evidence.
+- **Incompatible:** committed evidence shows a known conflict.
 
-- **Claude Code:** `~/.claude/skills/<skill-name>/`
-- **Google Antigravity / Gemini:** `~/.gemini/antigravity/skills/<skill-name>/` and `~/.gemini/config/skills/<skill-name>/`
-- **Hermes (Nous Research):** `~/.hermes/skills/<skill-name>/`
-- **Pi / OhMyPi:** `~/.pi/skills/<skill-name>/`
-- **OpenAI Codex / Universal Workspace:** `.agents/skills/<skill-name>/`
+## Runtime matrix
+
+| Runtime/surface | Filesystem/install | Discovery | Invocation |
+| --- | --- | --- | --- |
+| Claude Code | Tested in unit tests | Pending | Pending |
+| Hermes | Tested in unit tests | Pending | Pending |
+| Pi | Tested in unit tests | Pending | Pending |
+| OhMyPi (`omp`) | Tested in unit tests | Pending | Pending |
+| Gemini | Tested in unit tests | Pending | Pending |
+| Antigravity | Tested in unit tests | Pending | Pending |
+| Antigravity CLI | Tested in unit tests | Pending | Pending |
+| Codex | Tested in unit tests | Pending | Pending |
+
+## Primary path model
+
+| Agent | User scope | Project scope |
+| --- | --- | --- |
+| `claude` | `~/.claude/skills` | `<project>/.claude/skills` |
+| `hermes` | `$HERMES_HOME/skills` or `~/.hermes/skills` | `<project>/.hermes/skills` |
+| `pi` | `~/.pi/agent/skills` | `<project>/.pi/skills` |
+| `omp` | `~/.omp/agent/skills` | `<project>/.omp/skills` |
+| `gemini` | `~/.gemini/skills` | `<project>/.gemini/skills` |
+| `antigravity` | `~/.gemini/config/skills` | `<project>/.agents/skills` |
+| `antigravity-cli` | `~/.gemini/antigravity-cli/skills` | `<project>/.agents/skills` |
+| `codex` | `~/.agents/skills` | `<project>/.agents/skills` |
+
+Shared project destinations are deduplicated. Paths are the installer's current model, not claims that each runtime will discover or invoke the package.

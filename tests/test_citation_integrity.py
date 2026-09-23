@@ -1,148 +1,132 @@
 #!/usr/bin/env python3
-"""
-test_citation_integrity.py
-Comprehensive unit tests for the citation-integrity skill scripts.
-Zero external dependencies (pure standard library unittest).
-"""
+"""Tests for citation-key consistency checks."""
 
 import os
 import sys
 import tempfile
 import unittest
+from contextlib import redirect_stdout
+from io import StringIO
+from pathlib import Path
 
-# Add skills scripts to sys.path
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "skills", "citation-integrity", "scripts")))
-
 import verify_citations
-import fetch_doi
 
 
 class TestCitationIntegrity(unittest.TestCase):
-
     def setUp(self):
         self.temp_dir = tempfile.TemporaryDirectory()
+        self.root = Path(self.temp_dir.name)
 
     def tearDown(self):
         self.temp_dir.cleanup()
 
-    def test_markdown_citation_extraction(self):
-        sample_md = """
-        # Literature Review
+    def write(self, name, content):
+        path = self.root / name
+        path.write_text(content, encoding="utf-8")
+        return path
 
-        Recent work by @vaswani2017attention showed transformative results.
-        Other studies have corroborated this [@devlin2018bert; @radford2019language, p. 14].
-        Contact us at info@example.com for further inquiries.
-        Also see embedded LaTeX \\cite{brown2020language}.
-        """
-        keys = verify_citations.extract_markdown_keys(sample_md)
-        self.assertIn("vaswani2017attention", keys)
-        self.assertIn("devlin2018bert", keys)
-        self.assertIn("radford2019language", keys)
-        self.assertNotIn("example.com", keys)
+    def test_markdown_and_latex_extraction(self):
+        markdown = "@vaswani2017attention [@devlin2018bert; @radford2019language] info@example.com \\cite{brown2020language}"
+        keys = verify_citations.extract_markdown_keys(markdown) | verify_citations.extract_latex_keys(markdown)
+        self.assertEqual(keys, {"vaswani2017attention", "devlin2018bert", "radford2019language", "brown2020language"})
+        latex = r"\cite{he2016deep, simonyan2014very} \nocite{*}"
+        self.assertEqual(verify_citations.extract_latex_keys(latex), {"he2016deep", "simonyan2014very", "*"})
 
-    def test_latex_citation_extraction(self):
-        sample_latex = r"""
-        \section{Background}
-        As observed in \cite{he2016deep}, residual connections ease training.
-        Parenthetical citations \citep{krizhevsky2012imagenet, simonyan2014very} demonstrate convolutional scaling.
-        Furthermore, \textcite{lecun1998gradient} introduced modern backprop benchmarks.
-        """
-        keys = verify_citations.extract_latex_keys(sample_latex)
-        self.assertEqual(keys, {
-            "he2016deep",
-            "krizhevsky2012imagenet",
-            "simonyan2014very",
-            "lecun1998gradient"
-        })
+    def test_markdown_image_tokens_are_not_citations(self):
+        keys = verify_citations.extract_markdown_keys(
+            "![@diagram.png](diagram.png) [@real2026] ![@PHOTO.JPEG](photo.jpeg)"
+        )
+        self.assertEqual(keys, {"real2026"})
 
-    def test_bibtex_parser(self):
-        bib_content = """
-        @article{he2016deep,
-          title={Deep residual learning for image recognition},
-          author={He, Kaiming and Zhang, Xiangyu and Ren, Shaoqing and Sun, Jian},
-          journal={CVPR},
-          year={2016}
-        }
+    def test_duplicate_keys_inside_and_across_files_retain_locations(self):
+        first = self.write("one.bib", "@article{same,\n title={A}\n}\n@misc{same,\n title={B}\n}")
+        second = self.write("two.bib", "@book{same,\n title={C}\n}")
+        manuscript = self.write("paper.md", "[@same]")
+        entries, duplicates = verify_citations.parse_bibtex(str(first))
+        self.assertIn("same", entries)
+        self.assertEqual(duplicates[0]["locations"][0]["line"], 1)
+        report = verify_citations.audit_citations([str(manuscript)], [str(first), str(second)])
+        self.assertEqual(report["summary"]["duplicate_bib_keys"], 1)
+        self.assertEqual(len(report["duplicates"][0]["locations"]), 3)
+        self.assertEqual({Path(item["source"]).name for item in report["duplicates"][0]["locations"]}, {"one.bib", "two.bib"})
 
-        @inproceedings{krizhevsky2012imagenet,
-          title={Imagenet classification with deep convolutional neural networks},
-          author={Krizhevsky, Alex and Sutskever, Ilya and Hinton, Geoffrey E},
-          booktitle={NeurIPS},
-          year={2012}
-        }
+    def test_audit_reports_matched_missing_and_unreferenced_keys(self):
+        manuscript = self.write("paper.md", "[@he2016deep] [@missing2025]")
+        bib = self.write("refs.bib", "@article{he2016deep, title={Deep}}\n@article{unused, title={Unused}}")
+        report = verify_citations.audit_citations([str(manuscript)], [str(bib)])
+        self.assertIn("he2016deep", report["matched"])
+        self.assertEqual(report["missing"], ["missing2025"])
+        self.assertEqual(report["unreferenced"], ["unused"])
+        self.assertFalse(report["ok"])
+        self.assertIn("not checked", report["scope_note"])
 
-        % Duplicate key test
-        @misc{he2016deep,
-          title={Duplicate entry},
-          year={2016}
-        }
+    def test_nocite_all_does_not_create_missing_key_or_unreferenced_entries(self):
+        manuscript = self.write("paper.tex", r"\nocite{*}")
+        bib = self.write("refs.bib", "@article{one, title={One}}\n@book{two, title={Two}}")
+        report = verify_citations.audit_citations([str(manuscript)], [str(bib)])
+        self.assertEqual(report["missing"], [])
+        self.assertEqual(report["unreferenced"], [])
+        self.assertTrue(report["summary"]["nocite_all"])
+        self.assertTrue(report["ok"])
 
-        @comment{This is a comment}
-        """
-        bib_path = os.path.join(self.temp_dir.name, "refs.bib")
-        with open(bib_path, "w", encoding="utf-8") as f:
-            f.write(bib_content)
+    def test_missing_inputs_and_zero_entries_are_errors_and_nonzero(self):
+        missing = self.root / "missing.md"
+        empty_bib = self.write("empty.bib", "% no entries")
+        report = verify_citations.audit_citations([str(missing)], [str(empty_bib)])
+        self.assertTrue(report["input_errors"])
+        self.assertFalse(report["ok"])
+        self.assertEqual(verify_citations.main([str(missing), "--bib", str(empty_bib), "--json"]), 2)
 
-        entries, duplicates = verify_citations.parse_bibtex(bib_path)
-        self.assertIn("he2016deep", entries)
-        self.assertIn("krizhevsky2012imagenet", entries)
-        self.assertEqual(duplicates, ["he2016deep"])
+    def test_empty_directory_scans_zero_manuscripts(self):
+        bib = self.write("refs.bib", "@article{one, title={One}}")
+        report = verify_citations.audit_citations([str(self.root)], [str(bib)])
+        self.assertIn("Zero manuscript files were scanned", report["input_errors"])
 
-    def test_audit_citations_end_to_end(self):
-        md_content = """
-        Deep learning methods [@he2016deep] have outperformed traditional pipelines.
-        However, @missing2025author remains unverified.
-        """
-        md_path = os.path.join(self.temp_dir.name, "paper.md")
-        with open(md_path, "w", encoding="utf-8") as f:
-            f.write(md_content)
+    def test_empty_manuscript_is_an_input_error(self):
+        manuscript = self.root / "empty.md"
+        bibliography = self.root / "references.bib"
+        manuscript.write_text("", encoding="utf-8")
+        bibliography.write_text(
+            "@article{source2024, title={A source}, year={2024}}",
+            encoding="utf-8",
+        )
+        report = verify_citations.audit_citations(
+            [str(manuscript)], [str(bibliography)]
+        )
+        self.assertFalse(report["ok"])
+        self.assertTrue(
+            any("empty" in error.lower() for error in report["input_errors"])
+        )
 
-        bib_content = """
-        @article{he2016deep,
-          title={Deep Residual Learning},
-          author={He, K.},
-          year={2016}
-        }
-        @article{unused2020paper,
-          title={Unused Paper},
-          author={Nobody, N.},
-          year={2020}
-        }
-        """
-        bib_path = os.path.join(self.temp_dir.name, "refs.bib")
-        with open(bib_path, "w", encoding="utf-8") as f:
-            f.write(bib_content)
+    def test_direct_and_directory_extension_sets_match(self):
+        bib = self.write("refs.bib", "@article{one, title={One}}")
+        for extension in verify_citations.MANUSCRIPT_EXTENSIONS:
+            self.write(f"paper{extension}", "[@one]")
+        report = verify_citations.audit_citations([str(self.root)], [str(bib)])
+        self.assertEqual(report["summary"]["total_manuscript_files"], len(verify_citations.MANUSCRIPT_EXTENSIONS))
+        for extension in verify_citations.MANUSCRIPT_EXTENSIONS:
+            direct = verify_citations.audit_citations([str(self.root / f"paper{extension}")], [str(bib)])
+            self.assertEqual(direct["summary"]["total_manuscript_files"], 1)
 
-        report = verify_citations.audit_citations([md_path], [bib_path])
+        unsupported = self.write("paper.txt", "[@one]")
+        direct = verify_citations.audit_citations([str(unsupported)], [str(bib)])
+        self.assertIn("Unsupported manuscript extension", direct["input_errors"][0])
 
-        self.assertIn("he2016deep", report["valid"])
-        self.assertIn("missing2025author", report["missing"])
-        self.assertIn("unused2020paper", report["unreferenced"])
-        self.assertEqual(report["summary"]["missing_citations"], 1)
-        self.assertEqual(report["summary"]["unreferenced_bib_entries"], 1)
-
-    def test_arxiv_bibtex_generation(self):
-        # Test clean arXiv ID regex parsing and key generation
-        sample_xml = """<?xml version="1.0" encoding="UTF-8"?>
-        <feed xmlns="http://www.w3.org/2005/Atom" xmlns:arxiv="http://arxiv.org/schemas/atom">
-          <entry>
-            <id>http://arxiv.org/abs/1706.03762v7</id>
-            <title>Attention Is All You Need</title>
-            <author><name>Ashish Vaswani</name></author>
-            <author><name>Noam Shazeer</name></author>
-            <published>2017-06-12T00:00:00Z</published>
-            <arxiv:primary_category term="cs.CL"/>
-          </entry>
-        </feed>"""
-
-        import xml.etree.ElementTree as ET
-        root = ET.fromstring(sample_xml)
-        ns = {"atom": "http://www.w3.org/2005/Atom", "arxiv": "http://arxiv.org/schemas/atom"}
-        entry = root.find("atom:entry", ns)
-        self.assertIsNotNone(entry)
-
-        title = entry.find("atom:title", ns).text.strip()
-        self.assertEqual(title, "Attention Is All You Need")
+    def test_strict_unreferenced_failure_does_not_print_success(self):
+        manuscript = self.write("paper.md", "[@used]")
+        bib = self.write(
+            "refs.bib",
+            "@article{used, title={Used}}\n@article{unused, title={Unused}}",
+        )
+        output = StringIO()
+        with redirect_stdout(output):
+            result = verify_citations.main([
+                str(manuscript), "--bib", str(bib), "--strict",
+            ])
+        self.assertEqual(result, 1)
+        self.assertNotIn("check passed", output.getvalue())
+        self.assertIn("Unreferenced", output.getvalue())
 
 
 if __name__ == "__main__":

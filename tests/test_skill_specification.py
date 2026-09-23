@@ -1,93 +1,110 @@
 #!/usr/bin/env python3
-"""Test suite validating repository governance and Open Agent Skills specification."""
+"""Repository governance and Agent Skills frontmatter checks."""
 
+import ast
 import os
 import re
+import subprocess
 import unittest
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
+NAME_RE = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
+
+
+def parse_simple_frontmatter(content: str, source: Path):
+    """Parse the repository's scalar-only frontmatter without a YAML dependency."""
+    match = re.match(r"\A---\r?\n(.*?)\r?\n---(?:\r?\n|\Z)", content, re.DOTALL)
+    if not match:
+        raise ValueError(f"{source}: missing or malformed frontmatter delimiters")
+    values = {}
+    for line_number, raw_line in enumerate(match.group(1).splitlines(), 2):
+        if not raw_line.strip() or raw_line.lstrip().startswith("#"):
+            continue
+        field = re.match(r"^([A-Za-z][A-Za-z0-9_-]*):\s*(.*)$", raw_line)
+        if not field:
+            raise ValueError(f"{source}:{line_number}: expected a scalar key: value pair")
+        key, raw_value = field.groups()
+        if key in values:
+            raise ValueError(f"{source}:{line_number}: duplicate frontmatter key {key}")
+        if not raw_value:
+            value = ""
+        elif raw_value[0] in "\"'":
+            try:
+                value = ast.literal_eval(raw_value)
+            except (SyntaxError, ValueError) as exc:
+                raise ValueError(f"{source}:{line_number}: invalid quoted scalar") from exc
+            if not isinstance(value, str):
+                raise ValueError(f"{source}:{line_number}: scalar must be text")
+        else:
+            # In an unquoted scalar, # begins a YAML comment.
+            value = raw_value.split(" #", 1)[0].strip()
+        values[key] = value
+    return values
 
 
 class TestRepositoryGovernance(unittest.TestCase):
-    """Ensure governance files exist and strictly follow the supervision model."""
-
     def test_required_governance_files_exist(self):
-        required_files = [
-            REPO_ROOT / "README.md",
-            REPO_ROOT / "docs" / "ROADMAP.md",
-            REPO_ROOT / "docs" / "DECISIONS.md",
-            REPO_ROOT / "COMPATIBILITY.md",
-            REPO_ROOT / "CONTRIBUTING.md",
-            REPO_ROOT / ".github" / "pull_request_template.md",
+        required = [
+            "README.md", "COMPATIBILITY.md", "CONTRIBUTING.md", "SECURITY.md", "CHANGELOG.md",
+            "docs/ROADMAP.md", "docs/DECISIONS.md", ".github/pull_request_template.md",
+            ".github/workflows/ci.yml",
         ]
-        for path in required_files:
-            self.assertTrue(path.exists(), f"Missing required governance file: {path.relative_to(REPO_ROOT)}")
+        for relative in required:
+            self.assertTrue((REPO_ROOT / relative).is_file(), f"Missing {relative}")
 
     def test_roadmap_structure(self):
-        roadmap_path = REPO_ROOT / "docs" / "ROADMAP.md"
-        content = roadmap_path.read_text(encoding="utf-8")
+        content = (REPO_ROOT / "docs/ROADMAP.md").read_text(encoding="utf-8")
         for section in ["## Now", "## Next", "## Later", "## Ideas / Inbox"]:
-            self.assertIn(section, content, f"ROADMAP.md is missing required section: {section}")
+            self.assertIn(section, content)
 
     def test_decisions_structure(self):
-        decisions_path = REPO_ROOT / "docs" / "DECISIONS.md"
-        content = decisions_path.read_text(encoding="utf-8")
+        content = (REPO_ROOT / "docs/DECISIONS.md").read_text(encoding="utf-8")
         decisions = re.findall(r"### (D-\d{3}):\s*(.+)", content)
-        self.assertGreaterEqual(len(decisions), 4, "Expected at least foundational decisions D-001 to D-004")
-
-        required_fields = ["- **Date:**", "- **Status:**", "- **Decision:**", "- **Reason:**", "- **Alternatives Considered:**", "- **Consequences:**"]
-        for field in required_fields:
-            self.assertIn(field, content, f"DECISIONS.md entries must include field: {field}")
+        self.assertGreaterEqual(len(decisions), 5)
+        for field in ["- **Date:**", "- **Status:**", "- **Decision:**", "- **Reason:**", "- **Alternatives Considered:**", "- **Consequences:**"]:
+            self.assertEqual(content.count(field), len(decisions), f"Every ADR must include {field}")
 
     def test_pr_template_questions(self):
-        pr_template_path = REPO_ROOT / ".github" / "pull_request_template.md"
-        content = pr_template_path.read_text(encoding="utf-8")
-        for q in [
-            "## 1. What Changed?",
-            "## 2. Why?",
-            "## 3. How Was It Tested?",
-            "## 4. What Remains Incomplete?",
-            "## 5. What Decision Do I Need from Jakkrit?",
-        ]:
-            self.assertIn(q, content, f"PR template must include question header: {q}")
+        content = (REPO_ROOT / ".github/pull_request_template.md").read_text(encoding="utf-8")
+        for heading in ["## 1. What Changed?", "## 2. Why?", "## 3. How Was It Tested?", "## 4. What Remains Incomplete?", "## 5. What Decision Do I Need from Jakkrit?"]:
+            self.assertIn(heading, content)
+
+    def test_no_generated_binary_is_tracked(self):
+        tracked = subprocess.run(
+            ["git", "ls-files"], cwd=REPO_ROOT, check=True, capture_output=True, text=True
+        ).stdout.splitlines()
+        offenders = [path for path in tracked if path.endswith((".pyc", ".pyo", ".docx")) or "__pycache__" in Path(path).parts]
+        self.assertEqual(offenders, [])
 
 
 class TestSkillSpecification(unittest.TestCase):
-    """Validate any skill in skills/ conforms to the Open Agent Skills specification."""
-
     def test_skills_conform_to_spec(self):
-        skills_dir = REPO_ROOT / "skills"
-        if not skills_dir.exists():
-            return  # No skills added yet; foundation pass
+        skill_directories = sorted(path for path in (REPO_ROOT / "skills").iterdir() if path.is_dir() and not path.name.startswith("."))
+        self.assertTrue(skill_directories)
+        for directory in skill_directories:
+            with self.subTest(skill=directory.name):
+                skill_file = directory / "SKILL.md"
+                self.assertTrue(skill_file.is_file())
+                frontmatter = parse_simple_frontmatter(skill_file.read_text(encoding="utf-8"), skill_file)
+                self.assertTrue({"name", "description"}.issubset(frontmatter))
+                name = frontmatter["name"]
+                description = frontmatter["description"]
+                self.assertRegex(name, NAME_RE)
+                self.assertLessEqual(len(name), 64)
+                self.assertEqual(name, directory.name)
+                self.assertTrue(description.strip())
+                self.assertLessEqual(len(description), 1024)
+                self.assertIn("Use when", description)
+                scripts = directory / "scripts"
+                if os.name == "posix" and scripts.is_dir():
+                    for script in scripts.iterdir():
+                        if script.is_file() and script.suffix in {".py", ".sh"}:
+                            self.assertTrue(os.access(script, os.X_OK), f"{script} must be executable")
 
-        skill_folders = [d for d in skills_dir.iterdir() if d.is_dir() and not d.name.startswith(".")]
-        for skill_dir in skill_folders:
-            skill_md = skill_dir / "SKILL.md"
-            self.assertTrue(skill_md.exists(), f"Skill {skill_dir.name} is missing SKILL.md")
-
-            content = skill_md.read_text(encoding="utf-8")
-            self.assertTrue(content.startswith("---"), f"{skill_md} must start with YAML frontmatter delimiter '---'")
-
-            # Frontmatter check
-            frontmatter_match = re.match(r"^---\n(.*?)\n---\n", content, re.DOTALL)
-            self.assertIsNotNone(frontmatter_match, f"{skill_md} has invalid frontmatter formatting")
-            fm_text = frontmatter_match.group(1)
-
-            self.assertIn("name:", fm_text, f"{skill_md} frontmatter missing 'name'")
-            self.assertIn("description:", fm_text, f"{skill_md} frontmatter missing 'description'")
-
-            # Name match directory name
-            name_match = re.search(r"name:\s*([a-zA-Z0-9_\-]+)", fm_text)
-            self.assertIsNotNone(name_match)
-            self.assertEqual(name_match.group(1), skill_dir.name, f"Skill name '{name_match.group(1)}' does not match directory '{skill_dir.name}'")
-
-            # Check scripts directory permissions
-            scripts_dir = skill_dir / "scripts"
-            if scripts_dir.exists():
-                for script in scripts_dir.iterdir():
-                    if script.is_file() and script.suffix in [".py", ".sh"]:
-                        self.assertTrue(os.access(script, os.X_OK), f"Script {script} must be executable (chmod +x)")
+    def test_frontmatter_parser_preserves_hash_inside_quotes(self):
+        parsed = parse_simple_frontmatter("---\nname: reviewer\ndescription: 'Use when running Reviewer #2 checks.'\n---\n", Path("test"))
+        self.assertEqual(parsed["description"], "Use when running Reviewer #2 checks.")
 
 
 if __name__ == "__main__":

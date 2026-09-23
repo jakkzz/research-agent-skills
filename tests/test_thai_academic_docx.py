@@ -1,83 +1,141 @@
 #!/usr/bin/env python3
-"""
-test_thai_academic_docx.py
-Unit tests for thai-academic-docx script and OpenXML DOCX generator.
-Zero external dependencies.
-"""
+"""Tests for the minimal Thai DOCX preset."""
 
 import os
+import subprocess
 import sys
 import tempfile
 import unittest
 import xml.etree.ElementTree as ET
 import zipfile
+from contextlib import redirect_stderr
+from io import StringIO
+from pathlib import Path
+from unittest.mock import patch
 
-# Add script path to sys.path
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "skills", "thai-academic-docx", "scripts")))
-
 import build_thai_docx
 
 
 class TestThaiAcademicDocx(unittest.TestCase):
-
     def setUp(self):
         self.temp_dir = tempfile.TemporaryDirectory()
+        self.root = Path(self.temp_dir.name)
 
     def tearDown(self):
         self.temp_dir.cleanup()
 
-    def test_to_buddhist_era(self):
-        sample = "เอกสารนี้เขียนขึ้นเมื่อ ค.ศ. 2026 และจะทบทวนใน C.E. 2030"
-        converted = build_thai_docx.to_buddhist_era(sample)
+    def test_date_and_numeral_conversions(self):
+        converted = build_thai_docx.to_buddhist_era("ค.ศ. 2026 C.E. 2030")
         self.assertIn("พ.ศ. 2569", converted)
         self.assertIn("พ.ศ. 2573", converted)
-        self.assertNotIn("ค.ศ. 2026", converted)
+        self.assertEqual(build_thai_docx.to_thai_numerals("1 2.4 150"), "๑ ๒.๔ ๑๕๐")
 
-    def test_to_thai_numerals(self):
-        text = "บทที่ 1: ตารางที่ 2.4 สรุป 150 ตัวอย่าง"
-        thai_num = build_thai_docx.to_thai_numerals(text)
-        self.assertEqual(thai_num, "บทที่ ๑: ตารางที่ ๒.๔ สรุป ๑๕๐ ตัวอย่าง")
+    def test_create_docx_defines_every_referenced_heading_style(self):
+        output = self.root / "document.docx"
+        build_thai_docx.create_thai_docx("# One\n## Two\n### Three\nBody", str(output))
+        with zipfile.ZipFile(output) as archive:
+            document = archive.read("word/document.xml").decode()
+            styles = archive.read("word/styles.xml").decode()
+            ET.fromstring(document)
+            ET.fromstring(styles)
+            for level in (1, 2, 3):
+                self.assertIn(f'w:val="Heading{level}"', document)
+                self.assertIn(f'w:styleId="Heading{level}"', styles)
+            self.assertIn("TH Sarabun New", document)
 
-    def test_create_thai_docx_end_to_end(self):
-        sample_md = """# บทที่ 1 บทนำ
+    def test_invalid_xml_control_character_is_rejected(self):
+        with self.assertRaisesRegex(ValueError, "XML 1.0-invalid control character U\\+0001"):
+            build_thai_docx.create_thai_docx("valid\x01invalid", str(self.root / "bad.docx"))
+        self.assertFalse((self.root / "bad.docx").exists())
 
-การพัฒนาระบบตรวจวัดการจราจรด้วยปัญญาประดิษฐ์ในปี ค.ศ. 2026 มีความสำคัญอย่างยิ่งต่องานวิศวกรรมจราจร
+    def test_unmatched_and_unsupported_inline_markdown_remains_visible(self):
+        text = "unmatched * star and ` tick plus ~~strike~~ and [link](url)"
+        xml = build_thai_docx.markdown_to_document_xml(text, apply_be=False)
+        visible = "".join(ET.fromstring(xml).itertext())
+        self.assertEqual(visible.strip(), text)
 
-## 1.1 วัตถุประสงค์การวิจัย
-- เพื่อพัฒนาเครื่องมือต้นแบบ
-- เพื่อประเมินความแม่นยำ
+    def test_strong_text_preserves_literal_internal_asterisk(self):
+        xml = build_thai_docx.parse_inline_markdown("**complexity O(n*m)**")
+        word_namespace = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
+        root = ET.fromstring(f"<root xmlns:w='{word_namespace}'>{xml}</root>")
+        self.assertEqual("".join(root.itertext()), "complexity O(n*m)")
+        self.assertIsNotNone(root.find(".//w:b", {"w": word_namespace}))
 
-## 1.2 ข้อมูลการทดสอบ
-| คอนฟิกูเรชัน | ความแม่นยำ (%) | อัตราความเร็ว (FPS) |
-| :--- | :--- | :--- |
-| Config 1 (Central GPU) | 94.5 | 30.0 |
-| Config 2 (Edge Coral TPU) | 91.2 | 25.5 |
-"""
-        out_docx = os.path.join(self.temp_dir.name, "thesis_ch1.docx")
-        build_thai_docx.create_thai_docx(sample_md, out_docx, apply_be=True, use_thai_num=False)
+    def test_existing_output_requires_force(self):
+        output = self.root / "existing.docx"
+        output.write_bytes(b"original")
+        with self.assertRaises(FileExistsError):
+            build_thai_docx.create_thai_docx("body", str(output))
+        self.assertEqual(output.read_bytes(), b"original")
+        build_thai_docx.create_thai_docx("body", str(output), force=True)
+        self.assertTrue(zipfile.is_zipfile(output))
 
-        self.assertTrue(os.path.isfile(out_docx))
-        self.assertGreater(os.path.getsize(out_docx), 500)
+    def test_broken_symlink_output_requires_force(self):
+        output = self.root / "broken.docx"
+        try:
+            output.symlink_to(self.root / "missing.docx")
+        except (OSError, NotImplementedError) as exc:
+            self.skipTest(f"symlinks unavailable: {exc}")
+        with self.assertRaises(FileExistsError):
+            build_thai_docx.create_thai_docx("body", str(output))
+        self.assertTrue(output.is_symlink())
 
-        # Inspect zip entries
-        with zipfile.ZipFile(out_docx, "r") as zf:
-            namelist = zf.namelist()
-            self.assertIn("[Content_Types].xml", namelist)
-            self.assertIn("_rels/.rels", namelist)
-            self.assertIn("word/styles.xml", namelist)
-            self.assertIn("word/document.xml", namelist)
+    def test_no_force_publish_does_not_clobber_concurrent_output(self):
+        output = self.root / "raced.docx"
+        real_link = os.link
 
-            doc_xml = zf.read("word/document.xml").decode("utf-8")
-            self.assertIn("TH Sarabun New", doc_xml)
-            self.assertIn("พ.ศ. 2569", doc_xml)  # BE conversion applied
-            self.assertIn("บทที่ 1 บทนำ", doc_xml)
-            self.assertIn("Config 1 (Central GPU)", doc_xml)
+        def create_competitor_then_link(source, destination):
+            output.write_bytes(b"competitor")
+            return real_link(source, destination)
 
-            # Check standard Thai thesis margins (top=2160, left=2160, bottom=1440, right=1440)
-            self.assertIn('w:top="2160"', doc_xml)
-            self.assertIn('w:left="2160"', doc_xml)
-            self.assertIn('w:bottom="1440"', doc_xml)
-            self.assertIn('w:right="1440"', doc_xml)
+        with patch.object(build_thai_docx.os, "link", side_effect=create_competitor_then_link):
+            with self.assertRaises(FileExistsError):
+                build_thai_docx.create_thai_docx("body", str(output))
+        self.assertEqual(output.read_bytes(), b"competitor")
+        self.assertEqual(list(self.root.glob(".raced.docx.*.tmp")), [])
+
+    def test_atomic_failure_preserves_existing_output(self):
+        output = self.root / "existing.docx"
+        output.write_bytes(b"original")
+        with patch.object(build_thai_docx.os, "replace", side_effect=OSError("activation failed")):
+            with self.assertRaisesRegex(OSError, "activation failed"):
+                build_thai_docx.create_thai_docx("body", str(output), force=True)
+        self.assertEqual(output.read_bytes(), b"original")
+        self.assertEqual(list(self.root.glob(".existing.docx.*.tmp")), [])
+
+    def test_cli_refuses_input_equal_output(self):
+        path = self.root / "same.md"
+        path.write_text("body", encoding="utf-8")
+        with patch.object(sys, "argv", ["build_thai_docx.py", str(path), "--output", str(path)]):
+            with self.assertRaises(SystemExit) as raised:
+                build_thai_docx.main()
+        self.assertEqual(raised.exception.code, 1)
+        self.assertEqual(path.read_text(encoding="utf-8"), "body")
+
+    def test_cli_reports_invalid_utf8_as_normal_error(self):
+        source = self.root / "invalid.md"
+        source.write_bytes(b"\xff")
+        stderr = StringIO()
+        with patch.object(sys, "argv", ["build_thai_docx.py", str(source), "--output", str(self.root / "out.docx")]), \
+             redirect_stderr(stderr):
+            with self.assertRaises(SystemExit) as raised:
+                build_thai_docx.main()
+        self.assertEqual(raised.exception.code, 1)
+        self.assertIn("Error:", stderr.getvalue())
+        self.assertIn("UTF-8", stderr.getvalue())
+
+    def test_cli_help_is_encodable_on_legacy_windows_code_page(self):
+        environment = os.environ.copy()
+        environment["PYTHONIOENCODING"] = "cp1252"
+        result = subprocess.run(
+            [sys.executable, build_thai_docx.__file__, "--help"],
+            capture_output=True,
+            env=environment,
+            check=False,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr.decode("cp1252"))
+        self.assertIn(b"Buddhist Era (BE)", result.stdout)
 
 
 if __name__ == "__main__":
