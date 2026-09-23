@@ -20,6 +20,7 @@ LATEX_CITE_RE = re.compile(
 PANDOC_BRACKET_RE = re.compile(r"\[([^\]]*?@[A-Za-z0-9_:.\-]+[^\]]*?)\]")
 PANDOC_INLINE_RE = re.compile(r"(?<![\w.\-])@([A-Za-z0-9_:.\-]+)")
 BIB_ENTRY_RE = re.compile(r"@(\w+)\s*\{\s*([^,\s]+)\s*,", re.I)
+IMAGE_EXTENSIONS = (".png", ".jpg", ".jpeg", ".svg", ".gif")
 
 
 def extract_latex_keys(text: str) -> Set[str]:
@@ -34,10 +35,13 @@ def extract_latex_keys(text: str) -> Set[str]:
 def extract_markdown_keys(text: str) -> Set[str]:
     keys = set()
     for match in PANDOC_BRACKET_RE.finditer(text):
-        keys.update(re.findall(r"@([A-Za-z0-9_:.\-]+)", match.group(1)))
+        keys.update(
+            key for key in re.findall(r"@([A-Za-z0-9_:.\-]+)", match.group(1))
+            if not key.lower().endswith(IMAGE_EXTENSIONS)
+        )
     for match in PANDOC_INLINE_RE.finditer(text):
         key = match.group(1).strip()
-        if key and not key.lower().endswith((".png", ".jpg", ".jpeg", ".svg", ".gif")):
+        if key and not key.lower().endswith(IMAGE_EXTENSIONS):
             keys.add(key)
     return keys
 
@@ -207,9 +211,12 @@ def main(argv=None) -> int:
         print(f"BibTeX entries parsed: {summary['total_bib_entries']}")
         print(f"Matched keys: {summary['matched_citation_keys']}")
         print(f"Missing keys: {summary['missing_citation_keys']}")
+        print(f"Unreferenced entries: {summary['unreferenced_bib_entries']}")
+        print(f"Duplicate keys: {summary['duplicate_bib_keys']}")
         for error in report["input_errors"]:
             print(f"ERROR: {error}", file=sys.stderr)
-        if report["ok"] and not report["duplicates"]:
+        strict_failure = args.strict and (report["duplicates"] or report["unreferenced"])
+        if report["ok"] and not report["duplicates"] and not strict_failure:
             print("Citation-key consistency check passed; metadata and claim support were not verified.")
     if report["input_errors"] or report["missing"]:
         return 2 if report["input_errors"] else 1

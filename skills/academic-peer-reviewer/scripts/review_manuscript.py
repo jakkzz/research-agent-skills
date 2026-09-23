@@ -53,7 +53,11 @@ def extract_introduction(text: str) -> Tuple[Optional[str], Optional[int], str]:
     """Return Introduction body, 1-based starting line, and extraction status."""
     lines = text.splitlines()
     for index, line in enumerate(lines):
-        md = re.match(r"^\s*(#{1,6})\s+(?:\d+(?:\.\d+)*\s+)?introduction\s*$", line, re.I)
+        md = re.match(
+            r"^\s*(#{1,6})\s+(?:\d+(?:\.\d+)*[.)]?\s+)?introduction\s*$",
+            line,
+            re.I,
+        )
         if md:
             level = len(md.group(1))
             end = len(lines)

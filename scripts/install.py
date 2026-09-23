@@ -484,7 +484,8 @@ def check_status(skills: Dict[str, Path], target_dirs: List[Path], state_path: P
             destination = target / name
             present = destination.exists() or destination.is_symlink()
             label = "owned" if str(destination) in owned else "unowned"
-            print(f"  {name}: {'present, ' + label if present else 'absent'}")
+            presence = "present" if present else "absent"
+            print(f"  {name}: {presence}, {label}")
     return True
 
 

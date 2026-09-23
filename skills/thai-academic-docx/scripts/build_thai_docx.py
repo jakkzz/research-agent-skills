@@ -82,19 +82,40 @@ def build_run_xml(text: str, bold: bool = False, italic: bool = False) -> str:
 def parse_inline_markdown(line: str) -> str:
     """Parse basic inline Markdown while preserving every unmatched character."""
     runs_xml = []
-    # The final alternatives guarantee unmatched delimiters stay visible.
-    pattern = re.compile(r"(\*\*[^*\n]+\*\*|\*[^*\n]+\*|`[^`\n]+`|[^*`]+|\*|`)")
-    tokens = pattern.findall(line)
+    plain = []
 
-    for token in tokens:
-        if token.startswith("**") and token.endswith("**") and len(token) >= 4:
-            runs_xml.append(build_run_xml(token[2:-2], bold=True))
-        elif token.startswith("*") and token.endswith("*") and len(token) >= 2:
-            runs_xml.append(build_run_xml(token[1:-1], italic=True))
-        elif token.startswith("`") and token.endswith("`") and len(token) >= 2:
-            runs_xml.append(build_run_xml(token[1:-1]))
-        else:
-            runs_xml.append(build_run_xml(token))
+    def flush_plain() -> None:
+        if plain:
+            runs_xml.append(build_run_xml("".join(plain)))
+            plain.clear()
+
+    index = 0
+    while index < len(line):
+        if line.startswith("**", index):
+            end = line.find("**", index + 2)
+            if end > index + 2:
+                flush_plain()
+                runs_xml.append(build_run_xml(line[index + 2:end], bold=True))
+                index = end + 2
+                continue
+        if line[index] == "*":
+            end = line.find("*", index + 1)
+            if end > index + 1:
+                flush_plain()
+                runs_xml.append(build_run_xml(line[index + 1:end], italic=True))
+                index = end + 1
+                continue
+        if line[index] == "`":
+            end = line.find("`", index + 1)
+            if end > index + 1:
+                flush_plain()
+                runs_xml.append(build_run_xml(line[index + 1:end]))
+                index = end + 1
+                continue
+        plain.append(line[index])
+        index += 1
+
+    flush_plain()
 
     return "".join(runs_xml)
 

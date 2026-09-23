@@ -4,7 +4,9 @@
 import json
 import os
 import sys
+import tempfile
 import unittest
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "skills", "literature-discovery", "scripts")))
@@ -61,6 +63,23 @@ class TestLiteratureDiscovery(unittest.TestCase):
         self.assertEqual(report["sources"]["arxiv"]["error"], "timeout")
         self.assertEqual(len(report["results"]), 1)
         self.assertEqual(search_papers.main(["query", "--json"]), 1)
+
+    @patch.object(search_papers, "search_all")
+    def test_partial_failure_does_not_append_retryable_duplicates(self, search_all):
+        search_all.return_value = {
+            "status": "partial_failure",
+            "results": [{"bibtex": "@article{candidate, title={Candidate}}"}],
+            "sources": {},
+            "scope_note": "candidate discovery",
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            bibliography = Path(directory) / "references.bib"
+            bibliography.write_text("existing\n", encoding="utf-8")
+            result = search_papers.main([
+                "query", "--bib", "--append", str(bibliography),
+            ])
+            self.assertEqual(result, 1)
+            self.assertEqual(bibliography.read_text(encoding="utf-8"), "existing\n")
 
     @patch("urllib.request.urlopen")
     def test_malformed_xml_is_reported_without_exception(self, urlopen):

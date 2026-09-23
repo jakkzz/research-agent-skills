@@ -8,7 +8,9 @@ import sys
 import tempfile
 import threading
 import unittest
+from contextlib import redirect_stdout
 from concurrent.futures import ThreadPoolExecutor
+from io import StringIO
 from pathlib import Path
 from unittest.mock import patch
 
@@ -300,6 +302,27 @@ class TestInstaller(unittest.TestCase):
             "--state-path", str(self.state_path), "--status",
         ])
         self.assertEqual(result, 1)
+
+    def test_status_reports_owned_destination_that_is_absent(self):
+        target = self.root / "skills"
+        destination = target.resolve() / "citation-integrity"
+        state = {
+            "version": 1,
+            "installations": [{
+                "source_repo": "repo", "source_revision": None,
+                "skill": "citation-integrity", "destination": str(destination),
+                "mode": "copy", "installed_at": "2026-01-01T00:00:00+00:00",
+                "content_hashes": {".": "directory:755"},
+            }],
+        }
+        self.state_path.write_text(json.dumps(state), encoding="utf-8")
+        output = StringIO()
+        with redirect_stdout(output):
+            success = install.check_status(
+                {"citation-integrity": self.skill_src}, [target], self.state_path
+            )
+        self.assertTrue(success)
+        self.assertIn("citation-integrity: absent, owned", output.getvalue())
 
     def test_load_state_rejects_malformed_schema(self):
         valid_record = {

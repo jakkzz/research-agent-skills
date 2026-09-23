@@ -55,6 +55,13 @@ class TestThaiAcademicDocx(unittest.TestCase):
         visible = "".join(ET.fromstring(xml).itertext())
         self.assertEqual(visible.strip(), text)
 
+    def test_strong_text_preserves_literal_internal_asterisk(self):
+        xml = build_thai_docx.parse_inline_markdown("**complexity O(n*m)**")
+        word_namespace = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
+        root = ET.fromstring(f"<root xmlns:w='{word_namespace}'>{xml}</root>")
+        self.assertEqual("".join(root.itertext()), "complexity O(n*m)")
+        self.assertIsNotNone(root.find(".//w:b", {"w": word_namespace}))
+
     def test_existing_output_requires_force(self):
         output = self.root / "existing.docx"
         output.write_bytes(b"original")

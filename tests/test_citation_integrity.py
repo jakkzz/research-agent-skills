@@ -5,6 +5,8 @@ import os
 import sys
 import tempfile
 import unittest
+from contextlib import redirect_stdout
+from io import StringIO
 from pathlib import Path
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "skills", "citation-integrity", "scripts")))
@@ -30,6 +32,12 @@ class TestCitationIntegrity(unittest.TestCase):
         self.assertEqual(keys, {"vaswani2017attention", "devlin2018bert", "radford2019language", "brown2020language"})
         latex = r"\cite{he2016deep, simonyan2014very} \nocite{*}"
         self.assertEqual(verify_citations.extract_latex_keys(latex), {"he2016deep", "simonyan2014very", "*"})
+
+    def test_markdown_image_tokens_are_not_citations(self):
+        keys = verify_citations.extract_markdown_keys(
+            "![@diagram.png](diagram.png) [@real2026] ![@PHOTO.JPEG](photo.jpeg)"
+        )
+        self.assertEqual(keys, {"real2026"})
 
     def test_duplicate_keys_inside_and_across_files_retain_locations(self):
         first = self.write("one.bib", "@article{same,\n title={A}\n}\n@misc{same,\n title={B}\n}")
@@ -104,6 +112,21 @@ class TestCitationIntegrity(unittest.TestCase):
         unsupported = self.write("paper.txt", "[@one]")
         direct = verify_citations.audit_citations([str(unsupported)], [str(bib)])
         self.assertIn("Unsupported manuscript extension", direct["input_errors"][0])
+
+    def test_strict_unreferenced_failure_does_not_print_success(self):
+        manuscript = self.write("paper.md", "[@used]")
+        bib = self.write(
+            "refs.bib",
+            "@article{used, title={Used}}\n@article{unused, title={Unused}}",
+        )
+        output = StringIO()
+        with redirect_stdout(output):
+            result = verify_citations.main([
+                str(manuscript), "--bib", str(bib), "--strict",
+            ])
+        self.assertEqual(result, 1)
+        self.assertNotIn("check passed", output.getvalue())
+        self.assertIn("Unreferenced", output.getvalue())
 
 
 if __name__ == "__main__":

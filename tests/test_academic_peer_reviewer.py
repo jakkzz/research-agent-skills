@@ -41,6 +41,14 @@ Method text.
         self.assertTrue(cars["evidence"]["move_2"])
         self.assertEqual(report["preflight_status"], "pass-with-warnings")
 
+    def test_dotted_numbered_introduction_heading_is_recognized(self):
+        introduction, start, status = review_manuscript.extract_introduction(
+            "# 1. Introduction\nPrior research is important.\n# 2. Methods\nMethod text."
+        )
+        self.assertEqual(status, "markdown-heading")
+        self.assertEqual(start, 2)
+        self.assertEqual(introduction, "Prior research is important.")
+
     def test_missing_introduction_is_unknown_not_assumed_true(self):
         report = review_manuscript.audit_manuscript(
             "Traffic research is critical. However, a gap remains. In this paper, we propose X."

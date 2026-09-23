@@ -185,7 +185,12 @@ def main(argv=None) -> int:
     elif args.bib:
         output = "\n\n".join(record["bibtex"] for record in results)
         print(output)
-        if args.append and output:
+        if args.append and report["status"] != "ok":
+            print(
+                f"Error: results were not appended because search status is {report['status']}",
+                file=sys.stderr,
+            )
+        elif args.append and output:
             with open(args.append, "a", encoding="utf-8") as handle:
                 handle.write("\n\n" + output + "\n")
     else:
