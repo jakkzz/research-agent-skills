@@ -81,7 +81,6 @@ class TestRepositoryGovernance(unittest.TestCase):
 class TestSkillSpecification(unittest.TestCase):
     def test_skills_conform_to_spec(self):
         skill_directories = sorted(path for path in (REPO_ROOT / "skills").iterdir() if path.is_dir() and not path.name.startswith("."))
-        self.assertTrue(skill_directories)
         for directory in skill_directories:
             with self.subTest(skill=directory.name):
                 skill_file = directory / "SKILL.md"

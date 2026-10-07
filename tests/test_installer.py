@@ -24,8 +24,17 @@ class TestInstaller(unittest.TestCase):
         self.root = Path(self.temp_dir.name)
         self.fake_home = self.root / "home"
         self.fake_home.mkdir()
-        self.repo_root = Path(__file__).resolve().parent.parent
-        self.skill_src = self.repo_root / "skills" / "citation-integrity"
+        self.repo_root = self.root / "repo"
+        self.skill_src = self.repo_root / "skills" / "fixture-skill"
+        scripts = self.skill_src / "scripts"
+        scripts.mkdir(parents=True)
+        (self.skill_src / "SKILL.md").write_text(
+            "---\nname: fixture-skill\ndescription: Installer regression fixture.\n---\n",
+            encoding="utf-8",
+        )
+        tool = scripts / "tool.py"
+        tool.write_text("#!/usr/bin/env python3\n", encoding="utf-8")
+        tool.chmod(tool.stat().st_mode | stat.S_IXUSR)
         self.state_path = self.root / "state.json"
 
     def tearDown(self):
@@ -33,28 +42,28 @@ class TestInstaller(unittest.TestCase):
 
     def install(self, target, **kwargs):
         return install.install_skill(
-            "citation-integrity", self.skill_src, target,
+            "fixture-skill", self.skill_src, target,
             state_path=self.state_path, repo_root=self.repo_root, **kwargs
         )
 
     def test_discover_skills(self):
         skills = install.discover_skills(self.repo_root)
-        self.assertIn("citation-integrity", skills)
-        self.assertTrue((skills["citation-integrity"] / "SKILL.md").is_file())
+        self.assertIn("fixture-skill", skills)
+        self.assertTrue((skills["fixture-skill"] / "SKILL.md").is_file())
 
     def test_install_copy_is_default_and_executable(self):
         target = self.fake_home / ".claude" / "skills"
         success, message = self.install(target)
         self.assertTrue(success, message)
-        destination = target / "citation-integrity"
+        destination = target / "fixture-skill"
         self.assertTrue(destination.is_dir())
         self.assertFalse(destination.is_symlink())
         if os.name == "posix":
-            self.assertTrue((destination / "scripts" / "verify_citations.py").stat().st_mode & stat.S_IXUSR)
+            self.assertTrue((destination / "scripts" / "tool.py").stat().st_mode & stat.S_IXUSR)
 
     def test_existing_unowned_destination_is_refused_without_force(self):
         target = self.root / "skills"
-        destination = target / "citation-integrity"
+        destination = target / "fixture-skill"
         destination.mkdir(parents=True)
         marker = destination / "mine.txt"
         marker.write_text("keep", encoding="utf-8")
@@ -67,12 +76,12 @@ class TestInstaller(unittest.TestCase):
         target = self.fake_home / ".hermes" / "skills"
         success, message = self.install(target, symlink=True)
         self.assertTrue(success, message)
-        self.assertTrue((target / "citation-integrity").is_symlink())
-        self.assertEqual((target / "citation-integrity").resolve(), self.skill_src.resolve())
+        self.assertTrue((target / "fixture-skill").is_symlink())
+        self.assertEqual((target / "fixture-skill").resolve(), self.skill_src.resolve())
 
     def test_atomic_copy_rolls_back_existing_destination(self):
         target = self.root / "skills"
-        destination = target / "citation-integrity"
+        destination = target / "fixture-skill"
         destination.mkdir(parents=True)
         marker = destination / "original.txt"
         marker.write_text("original", encoding="utf-8")
@@ -87,12 +96,12 @@ class TestInstaller(unittest.TestCase):
             success, message = self.install(target, force=True)
         self.assertFalse(success, message)
         self.assertEqual(marker.read_text(encoding="utf-8"), "original")
-        self.assertFalse(any(target.glob(".citation-integrity.staging-*")))
-        self.assertFalse(any(target.glob(".citation-integrity.backup-*")))
+        self.assertFalse(any(target.glob(".fixture-skill.staging-*")))
+        self.assertFalse(any(target.glob(".fixture-skill.backup-*")))
 
     def test_manifest_failure_restores_original_even_if_quarantine_cleanup_fails(self):
         target = self.root / "skills"
-        destination = target / "citation-integrity"
+        destination = target / "fixture-skill"
         destination.mkdir(parents=True)
         marker = destination / "original.txt"
         marker.write_text("original", encoding="utf-8")
@@ -109,7 +118,7 @@ class TestInstaller(unittest.TestCase):
 
         self.assertFalse(success, message)
         self.assertEqual(marker.read_text(encoding="utf-8"), "original")
-        self.assertFalse(any(target.glob(".citation-integrity.backup-*")))
+        self.assertFalse(any(target.glob(".fixture-skill.backup-*")))
 
     def test_manifest_records_ownership_and_source(self):
         target = self.root / "skills"
@@ -118,8 +127,8 @@ class TestInstaller(unittest.TestCase):
         state = json.loads(self.state_path.read_text(encoding="utf-8"))
         self.assertEqual(len(state["installations"]), 1)
         record = state["installations"][0]
-        self.assertEqual(record["skill"], "citation-integrity")
-        self.assertEqual(record["destination"], str(target.resolve() / "citation-integrity"))
+        self.assertEqual(record["skill"], "fixture-skill")
+        self.assertEqual(record["destination"], str(target.resolve() / "fixture-skill"))
         self.assertEqual(record["mode"], "copy")
         self.assertTrue(record["installed_at"])
         self.assertTrue(record["source_repo"])
@@ -177,7 +186,7 @@ class TestInstaller(unittest.TestCase):
         target = self.root / "skills"
         success, message = self.install(target, symlink=True)
         self.assertTrue(success, message)
-        destination = target / "citation-integrity"
+        destination = target / "fixture-skill"
         external = self.root / "external"
         external.mkdir()
         (external / "do-not-read.txt").write_text("external", encoding="utf-8")
@@ -185,7 +194,7 @@ class TestInstaller(unittest.TestCase):
         destination.symlink_to(external, target_is_directory=True)
 
         success, message = install.uninstall_skill(
-            "citation-integrity", target, state_path=self.state_path
+            "fixture-skill", target, state_path=self.state_path
         )
 
         self.assertFalse(success)
@@ -196,12 +205,12 @@ class TestInstaller(unittest.TestCase):
         target = self.root / "skills"
         success, message = self.install(target, symlink=True)
         self.assertTrue(success, message)
-        destination = target / "citation-integrity"
+        destination = target / "fixture-skill"
         destination.unlink()
         destination.symlink_to(self.root / "missing", target_is_directory=True)
 
         success, message = install.uninstall_skill(
-            "citation-integrity", target, state_path=self.state_path
+            "fixture-skill", target, state_path=self.state_path
         )
 
         self.assertFalse(success)
@@ -213,32 +222,32 @@ class TestInstaller(unittest.TestCase):
         self.assertTrue(self.install(target)[0])
         with patch.object(install, "content_hashes", side_effect=AssertionError("must not inspect")):
             success, message = install.uninstall_skill(
-                "citation-integrity", target, state_path=self.state_path, force=True
+                "fixture-skill", target, state_path=self.state_path, force=True
             )
         self.assertTrue(success, message)
 
     def test_uninstall_refuses_unowned_destination(self):
         target = self.root / "skills"
-        (target / "citation-integrity").mkdir(parents=True)
+        (target / "fixture-skill").mkdir(parents=True)
         success, message = install.uninstall_skill(
-            "citation-integrity", target, state_path=self.state_path
+            "fixture-skill", target, state_path=self.state_path
         )
         self.assertFalse(success)
         self.assertIn("unowned", message)
-        self.assertTrue((target / "citation-integrity").exists())
+        self.assertTrue((target / "fixture-skill").exists())
 
     def test_uninstall_refuses_drift_unless_forced(self):
         target = self.root / "skills"
         self.assertTrue(self.install(target)[0])
-        destination = target / "citation-integrity"
+        destination = target / "fixture-skill"
         (destination / "SKILL.md").write_text("changed", encoding="utf-8")
         success, message = install.uninstall_skill(
-            "citation-integrity", target, state_path=self.state_path
+            "fixture-skill", target, state_path=self.state_path
         )
         self.assertFalse(success)
         self.assertIn("drifted", message)
         success, message = install.uninstall_skill(
-            "citation-integrity", target, state_path=self.state_path, force=True
+            "fixture-skill", target, state_path=self.state_path, force=True
         )
         self.assertTrue(success, message)
         self.assertFalse(destination.exists())
@@ -248,12 +257,12 @@ class TestInstaller(unittest.TestCase):
     def test_missing_owned_uninstall_is_failure(self):
         target = self.root / "skills"
         self.assertTrue(self.install(target)[0])
-        destination = target / "citation-integrity"
+        destination = target / "fixture-skill"
         for item in sorted(destination.rglob("*"), reverse=True):
             item.unlink() if item.is_file() else item.rmdir()
         destination.rmdir()
         success, message = install.uninstall_skill(
-            "citation-integrity", target, state_path=self.state_path
+            "fixture-skill", target, state_path=self.state_path
         )
         self.assertFalse(success)
         self.assertIn("missing", message)
@@ -269,7 +278,7 @@ class TestInstaller(unittest.TestCase):
     def test_dry_run_uninstall_does_not_create_state_directory(self):
         fresh_state = self.root / "unused" / "install-state.json"
         success, message = install.uninstall_skill(
-            "citation-integrity", self.root / "skills",
+            "fixture-skill", self.root / "skills",
             state_path=fresh_state, dry_run=True,
         )
         self.assertFalse(success)
@@ -305,12 +314,12 @@ class TestInstaller(unittest.TestCase):
 
     def test_status_reports_owned_destination_that_is_absent(self):
         target = self.root / "skills"
-        destination = target.resolve() / "citation-integrity"
+        destination = target.resolve() / "fixture-skill"
         state = {
             "version": 1,
             "installations": [{
                 "source_repo": "repo", "source_revision": None,
-                "skill": "citation-integrity", "destination": str(destination),
+                "skill": "fixture-skill", "destination": str(destination),
                 "mode": "copy", "installed_at": "2026-01-01T00:00:00+00:00",
                 "content_hashes": {".": "directory:755"},
             }],
@@ -319,10 +328,10 @@ class TestInstaller(unittest.TestCase):
         output = StringIO()
         with redirect_stdout(output):
             success = install.check_status(
-                {"citation-integrity": self.skill_src}, [target], self.state_path
+                {"fixture-skill": self.skill_src}, [target], self.state_path
             )
         self.assertTrue(success)
-        self.assertIn("citation-integrity: absent, owned", output.getvalue())
+        self.assertIn("fixture-skill: absent, owned", output.getvalue())
 
     def test_load_state_rejects_malformed_schema(self):
         valid_record = {
@@ -355,7 +364,7 @@ class TestInstaller(unittest.TestCase):
             encoding="utf-8",
         )
         success, message = install.uninstall_skill(
-            "citation-integrity", self.root / "skills", state_path=self.state_path
+            "fixture-skill", self.root / "skills", state_path=self.state_path
         )
         self.assertFalse(success)
         self.assertIn("state manifest", message)
@@ -370,7 +379,7 @@ class TestInstaller(unittest.TestCase):
 
         def delayed_write(state_path, state):
             destinations = {record["destination"] for record in state["installations"]}
-            if str(target_a.resolve() / "citation-integrity") in destinations and not first_write_started.is_set():
+            if str(target_a.resolve() / "fixture-skill") in destinations and not first_write_started.is_set():
                 first_write_started.set()
                 self.assertTrue(release_first_write.wait(3), "timed out releasing first manifest write")
             return real_write_state(state_path, state)
@@ -397,8 +406,8 @@ class TestInstaller(unittest.TestCase):
         self.assertEqual(
             {record["destination"] for record in state["installations"]},
             {
-                str(target_a.resolve() / "citation-integrity"),
-                str(target_b.resolve() / "citation-integrity"),
+                str(target_a.resolve() / "fixture-skill"),
+                str(target_b.resolve() / "fixture-skill"),
             },
         )
 
@@ -419,7 +428,7 @@ class TestInstaller(unittest.TestCase):
         def run_uninstall():
             try:
                 return install.uninstall_skill(
-                    "citation-integrity", target, state_path=self.state_path
+                    "fixture-skill", target, state_path=self.state_path
                 )
             finally:
                 uninstall_finished.set()
@@ -436,7 +445,7 @@ class TestInstaller(unittest.TestCase):
 
         self.assertTrue(reinstall_result[0], reinstall_result[1])
         self.assertTrue(uninstall_result[0], uninstall_result[1])
-        self.assertFalse((target / "citation-integrity").exists())
+        self.assertFalse((target / "fixture-skill").exists())
         self.assertEqual(install._load_state(self.state_path)["installations"], [])
 
     def test_agent_path_matrix_and_hermes_home(self):

@@ -4,6 +4,10 @@ All notable changes are documented here. The project is alpha; interfaces and ou
 
 ## Unreleased
 
+### Removed
+
+- Removed the academic peer reviewer, citation integrity, literature discovery, and Thai academic DOCX skills and their skill-specific tests.
+
 ### Changed
 
 - Marked project maturity and runtime compatibility claims as alpha/Pending without committed live-runtime evidence.
